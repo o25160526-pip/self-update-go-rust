@@ -1,0 +1,52 @@
+# === Build artifacts ===
+*.exe
+*.exe~
+*.msi
+*.nsis
+*.dll
+*.lib
+*.pdb
+
+# === Go ===
+go-demo/build/bin/
+go-demo/vendor/
+
+# === Rust / Cargo ===
+rust-demo/target/
+rust-demo/src-tauri/target/
+
+# === Node / Frontend ===
+node_modules/
+dist/
+go-demo/frontend/dist/
+rust-demo/frontend/dist/
+
+# === Wails ===
+go-demo/build/
+go-demo/frontend/wailsjs/
+
+# === Tauri ===
+rust-demo/src-tauri/gen/
+
+# === Secrets / Keys (KHÔNG BAO GIỜ commit) ===
+*.key
+*.key.pub
+.keys/
+.env
+.env.*
+!.env.example
+
+# === IDE / OS ===
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# === Logs ===
+*.log
+
+# === Update state (local runtime) ===
+go-demo/state/
+rust-demo/state/

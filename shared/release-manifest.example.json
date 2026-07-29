@@ -1,0 +1,13 @@
+{
+  "version": "1.0.1",
+  "channel": "stable",
+  "publishedAt": "2026-07-29T00:00:00Z",
+  "releaseNotes": "Fix update flow and restart",
+  "minSupportedVersion": "1.0.0",
+  "platform": "windows-x86_64",
+  "url": "https://github.com/OWNER/REPO/releases/download/v1.0.1/app-windows-x64.exe",
+  "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "signature": "untrusted comment: signature from minisign key\nRWR...base64...\ntrusted comment: ...\nbase64...",
+  "size": 12345678,
+  "mandatory": false
+}

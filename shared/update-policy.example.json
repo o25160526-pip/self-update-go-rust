@@ -1,0 +1,14 @@
+{
+  "channel": "stable",
+  "autoCheckOnStartup": true,
+  "autoCheckIntervalMinutes": 60,
+  "autoDownload": true,
+  "autoInstall": true,
+  "requireUserConfirmation": false,
+  "restartAutomatically": true,
+  "allowDowngrade": false,
+  "rollbackOnStartupFailure": true,
+  "healthCheckTimeoutSeconds": 30,
+  "maxRollbackAttempts": 1,
+  "minSupportedVersion": "1.0.0"
+}

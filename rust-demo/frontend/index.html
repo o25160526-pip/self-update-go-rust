@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Rust Demo - Auto Update</title>
+  <style>
+    body { font-family: system-ui, sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; margin: 0; background: #1a1a2e; color: #e0e0e0; }
+    .container { text-align: center; padding: 2rem; }
+    .version { font-size: 2rem; font-weight: bold; color: #64b5f6; }
+    .state { font-size: 1.2rem; margin-top: 1rem; padding: 0.5rem 1rem; border-radius: 8px; background: #16213e; display: inline-block; }
+    .log { margin-top: 2rem; text-align: left; background: #0d1117; padding: 1rem; border-radius: 8px; font-family: monospace; font-size: 0.85rem; max-width: 600px; max-height: 200px; overflow-y: auto; }
+    .info { color: #8b949e; font-size: 0.9rem; margin-top: 0.5rem; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Hello, version <span id="version" class="version">loading...</span></h1>
+    <div class="info" id="info">OS: ... | Arch: ...</div>
+    <div class="state" id="state">checking...</div>
+    <div class="log" id="log">Updater log:\n</div>
+  </div>
+  <script>
+    const { invoke } = window.__TAURI__.core;
+    
+    async function init() {
+      try {
+        const version = await invoke('get_version');
+        document.getElementById('version').textContent = version;
+        
+        const state = await invoke('get_update_state');
+        document.getElementById('state').textContent = state;
+        
+        // OS + Arch
+        const os = window.__TAURI__?.os || navigator.platform;
+        document.getElementById('info').textContent = `OS: ${os} | Arch: ${navigator.userAgent}`;
+        
+        const log = document.getElementById('log');
+        log.textContent = `Updater log:\n[init] version=${version}, state=${state}`;
+      } catch (e) {
+        document.getElementById('log').textContent = `Error: ${e}`;
+      }
+    }
+    
+    init();
+  </script>
+</body>
+</html>
