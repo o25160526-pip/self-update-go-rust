@@ -1,15 +1,20 @@
 {
-  "activeHost": "github",
-  "hosts": {
-    "github": {
-      "baseUrl": "https://github.com/o25160526-pip/self-update-go-rust/releases/latest/download",
-      "goManifest": "manifest-go.json",
-      "rustManifest": "latest-rust.json"
+  "sources": [
+    {
+      "name": "github",
+      "kind": "github",
+      "manifestUrl": "https://github.com/o25160526-pip/self-update-go-rust/releases/latest/download/manifest-go.json",
+      "priority": 0,
+      "enabled": true
     },
-    "staging": {
-      "baseUrl": "https://updates.example.com/self-update-go-rust/stable",
-      "goManifest": "manifest-go.json",
-      "rustManifest": "latest-rust.json"
+    {
+      "name": "azure",
+      "kind": "azure",
+      "manifestUrl": "https://dev.azure.com/ORG/PROJECT/_apis/build/builds/BUILDID/artifacts?artifactName=go-update&api-version=7.1",
+      "priority": 10,
+      "enabled": false
     }
-  }
+  ],
+  "activeHost": "github",
+  "hosts": {}
 }

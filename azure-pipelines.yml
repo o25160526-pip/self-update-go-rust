@@ -1,0 +1,77 @@
+trigger:
+- main
+- release/*
+
+pr:
+- main
+
+pool:
+  vmImage: windows-latest
+
+variables:
+  nodeVersion: '24.x'
+  goVersion: '1.25.12'
+  rustToolchain: '1.94.1'
+
+steps:
+- checkout: self
+  fetchDepth: 0
+
+- task: UseNode@1
+  displayName: Use Node.js 24
+  inputs:
+    version: $(nodeVersion)
+
+- powershell: |
+    Set-StrictMode -Version Latest
+    $ErrorActionPreference = 'Stop'
+    Invoke-WebRequest https://go.dev/dl/go1.25.12.windows-amd64.msi -OutFile $(Agent.TempDirectory)\go.msi
+    Start-Process msiexec.exe -ArgumentList '/i', '$(Agent.TempDirectory)\go.msi', '/qn', '/norestart' -Wait
+    $env:PATH = "$env:PATH;C:\Program Files\Go\bin"
+    go version
+  displayName: Install Go
+
+- powershell: |
+    Set-StrictMode -Version Latest
+    $ErrorActionPreference = 'Stop'
+    rustup toolchain install $(rustToolchain)
+    rustup default $(rustToolchain)
+    rustup target add x86_64-pc-windows-msvc
+    cargo --version
+  displayName: Install Rust
+
+- powershell: |
+    Set-StrictMode -Version Latest
+    $ErrorActionPreference = 'Stop'
+    Push-Location go-demo\frontend; npm ci; npm run build; Pop-Location
+    Push-Location go-demo
+    go test ./... -race -timeout 300s
+    go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
+    wails build -clean -ldflags "-X go-demo/internal/version.Version=1.0.0"
+    Pop-Location
+  displayName: Build and test Go
+
+- powershell: |
+    Set-StrictMode -Version Latest
+    $ErrorActionPreference = 'Stop'
+    Push-Location rust-demo
+    npm ci
+    cargo fmt --all
+    cargo fmt --all -- --check
+    cargo clippy --manifest-path logic/Cargo.toml --all-targets -- -D warnings
+    cargo test --manifest-path logic/Cargo.toml
+    npm run tauri build -- --target x86_64-pc-windows-msvc
+    Pop-Location
+  displayName: Build and test Rust
+
+- task: PublishPipelineArtifact@1
+  displayName: Publish Go artifacts
+  inputs:
+    targetPath: '$(Build.SourcesDirectory)\go-demo\build\bin'
+    artifact: 'go-demo-windows'
+
+- task: PublishPipelineArtifact@1
+  displayName: Publish Rust artifacts
+  inputs:
+    targetPath: '$(Build.SourcesDirectory)\rust-demo\target\x86_64-pc-windows-msvc\release\bundle'
+    artifact: 'rust-demo-windows'
