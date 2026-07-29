@@ -10,8 +10,8 @@
 
 | Phase | Trạng thái | GATE | Ghi chú |
 |---|---|---|---|
-| P0 — Scaffolding & Môi trường | ✅ | GATE-0 | Go + Rust build Windows xanh |
-| P1 — App Hello Version | 🔄 | GATE-1 | Release v1.0.2 sẵn để user chạy Windows 11 |
+| P0 — Scaffolding & Môi trường | ✅ | GATE-0 | CI xanh cả Go + Rust trên windows-latest |
+| P1 — App Hello Version | 🔄 | GATE-1 | Code xong; đang phát hành v1.0.2 để user chạy Windows 11 |
 | P2 — Check Update + Manifest | ✅ | GATE-2 | v1.0.0/v1.0.1 đã có release + manifest |
 | P3 — Download + Verify + Install + Restart | 🔄 | GATE-3 | T1 pass; T3 đang kiểm chứng bằng v1.0.2 |
 | P4 — Rollback + Health-Check | 🔄 | GATE-4 | T1 pass; T3 cần test trên Windows 11 |
@@ -23,7 +23,7 @@
 |---|---|---|---|---|
 | v1.0.0 | ✅ | ✅ | Baseline đầu tiên | ✅ Published |
 | v1.0.1 | ✅ | ✅ | Bản update trung gian | ✅ Published |
-| v1.0.2 | 🔄 | 🔄 | Bản user tải về để kiểm chứng update thật | Chờ CI |
+| v1.0.2 | 🔄 | 🔄 | Bản user tải về để kiểm chứng update thật | CI đang chạy |
 
 ## Chi tiết từng Task
 
@@ -56,16 +56,16 @@
 ## Quy trình kiểm chứng v1.0.2
 
 1. Chờ cả 2 workflow trên nhánh `release/v1.0.2` xanh.
-2. Kiểm tra Release v1.0.2 có đủ: Go `.exe/.sig/.sha256/manifest-go.json`; Rust installer `.exe/.sig/.sha256/latest-rust.json`.
+2. Kiểm tra Release v1.0.2 có đủ Go `.exe/.sig/.sha256/manifest-go.json` và Rust installer `.exe/.sig/.sha256/latest-rust.json`.
 3. Trên Windows 11, tải Go/Rust v1.0.0 hoặc v1.0.1 và chạy thử update lên v1.0.2.
 4. Ghi version hiển thị, trạng thái updater, log, UAC/SmartScreen, kết quả restart vào ClickUp History Work.
-5. Nếu update lỗi, giữ nguyên state/log, sửa code, tăng patch version tiếp theo và lặp CI.
+5. Nếu update lỗi, giữ nguyên state/log, sửa code, tăng patch version tiếp theo rồi lặp CI.
 
 ## Issues & Lệch hướng
 
 | # | Mô tả | Hành động | Trạng thái |
 |---|---|---|---|
-| 1 | Wails v3 không có updater service | Wails v2 + staged install | ✅ |
+| 1 | Wails v3 không có updater service | Wails v2 + tự viết staged install | ✅ |
 | 2 | Agent Linux không build Windows | CI + user T3 | ✅ |
 | 3 | Tauri 2 không có built-in rollback | Adapter tự viết | ✅ |
 | 6 | Go embed dist thiếu file | `.gitkeep` + build frontend trước test | ✅ |
