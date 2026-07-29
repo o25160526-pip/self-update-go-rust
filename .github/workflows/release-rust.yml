@@ -62,7 +62,12 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ github.ref_type == 'tag' && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: npm run tauri build -- --target x86_64-pc-windows-msvc
+        run: |
+          npm run tauri build -- --target x86_64-pc-windows-msvc 2>&1 | Tee-Object -FilePath tauri-build.log
+          if ($LASTEXITCODE -ne 0) {
+            Get-Content tauri-build.log | Select-String -Pattern 'error|fatal|cannot|failed|panicked' | Select-Object -First 8 | ForEach-Object { Write-Host "::error::$($_.Line)" }
+            throw 'tauri build failed'
+          }
       - name: Collect artifact
         run: |
           $bundle = Get-ChildItem rust-demo/target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe | Select-Object -First 1

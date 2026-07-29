@@ -22,9 +22,10 @@ rust-demo/src-tauri/target/
 
 # === Node / Frontend ===
 node_modules/
-dist/
-go-demo/frontend/dist/
 rust-demo/frontend/dist/
+# Giu placeholder .gitkeep vi //go:embed all:frontend/dist can it nhat 1 file
+go-demo/frontend/dist/*
+!go-demo/frontend/dist/.gitkeep
 
 # === Wails ===
 go-demo/build/
@@ -32,8 +33,9 @@ go-demo/frontend/wailsjs/
 
 # === Tauri ===
 rust-demo/src-tauri/gen/
+rust-demo/src-tauri/icons/icon.ico
 
-# === Secrets / Keys (KHÔNG BAO GIỜ commit) ===
+# === Secrets / Keys (KHONG BAO GIO commit) ===
 *.key
 *.key.pub
 .keys/

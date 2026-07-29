@@ -1,0 +1,2 @@
+Placeholder de `//go:embed all:frontend/dist` luon co file de embed.
+Vite se ghi de thu muc nay khi chay `npm run build`.
