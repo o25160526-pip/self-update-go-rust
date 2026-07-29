@@ -18,12 +18,25 @@ pub async fn check_on_startup(app: AppHandle, offline: bool, silent: bool) {
     if offline {
         let result = crate::updater::mock::check();
         set_state(if result.has_update { "update-available" } else { "up-to-date" });
-        if silent { app.exit(0); }
+        if silent {
+            app.exit(0);
+        }
         return;
     }
     let updater_result = if let Ok(endpoint) = std::env::var("SELF_UPDATE_MANIFEST_URL") {
+        let endpoint = match endpoint.parse() {
+            Ok(value) => value,
+            Err(error) => {
+                eprintln!("invalid updater endpoint: {error}");
+                set_state("failed");
+                if silent {
+                    app.exit(1);
+                }
+                return;
+            }
+        };
         app.updater_builder()
-            .endpoints(vec![endpoint.parse().map_err(|e| format!("invalid endpoint: {e}"))])
+            .endpoints(vec![endpoint])
             .and_then(|builder| builder.build())
     } else {
         app.updater()
@@ -33,7 +46,9 @@ pub async fn check_on_startup(app: AppHandle, offline: bool, silent: bool) {
         Err(e) => {
             eprintln!("updater init failed: {e}");
             set_state("failed");
-            if silent { app.exit(1); }
+            if silent {
+                app.exit(1);
+            }
             return;
         }
     };
@@ -47,12 +62,16 @@ pub async fn check_on_startup(app: AppHandle, offline: bool, silent: bool) {
         }
         Ok(None) => {
             set_state("up-to-date");
-            if silent { app.exit(0); }
+            if silent {
+                app.exit(0);
+            }
         }
         Err(e) => {
             eprintln!("update check failed: {e}");
             set_state("failed");
-            if silent { app.exit(1); }
+            if silent {
+                app.exit(1);
+            }
         }
     }
 }
