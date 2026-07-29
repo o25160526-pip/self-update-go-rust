@@ -3,3 +3,4 @@ pub mod semver;
 pub mod manifest;
 pub mod policy;
 pub mod hash;
+pub mod keys;
