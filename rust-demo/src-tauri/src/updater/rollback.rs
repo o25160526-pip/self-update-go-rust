@@ -1,32 +1,21 @@
-use std::{io, path::PathBuf, process::Command};
+use std::{fs, io, path::PathBuf};
 
 use tauri::{AppHandle, Manager};
 
 pub fn rollback_to_previous(app: &AppHandle) -> Result<String, String> {
-    let dir: PathBuf = app
-        .path()
-        .app_local_data_dir()
-        .map_err(|e| e.to_string())?;
-    let installer = dir.join("updates").join("previous-installer.exe");
-    if !installer.exists() {
-        return Err(format!(
-            "No cached previous installer found at {}",
-            installer.display()
-        ));
+    let path = cached_installer_path(app).map_err(|e| e.to_string())?;
+    if !path.exists() {
+        return Err(format!("cached installer not found: {}", path.display()));
     }
-    Command::new(&installer)
-        .arg("/PASSIVE")
-        .spawn()
+    std::process::Command::new(&path)
+        .arg("/S")
+        .status()
         .map_err(|e| e.to_string())?;
-    app.exit(0);
-    Ok("rollback-started".into())
+    Ok(format!("rollback installer started: {}", path.display()))
 }
 
+#[allow(dead_code)]
 pub fn cached_installer_path(app: &AppHandle) -> Result<PathBuf, io::Error> {
-    Ok(app
-        .path()
-        .app_local_data_dir()
-        .map_err(io::Error::other)?
-        .join("updates")
-        .join("previous-installer.exe"))
+    let dir = app.path().app_data_dir()?;
+    Ok(dir.join("previous").join("rust-demo-previous-setup.exe"))
 }

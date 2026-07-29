@@ -66,17 +66,18 @@ jobs:
         run: |
           $keyPath = Join-Path $env:RUNNER_TEMP signing.key
           if ([string]::IsNullOrWhiteSpace($env:SECRET_KEY)) {
+            $tauriKey = (Get-Content keys/demo-signing.key.b64 -Raw).Trim()
             Copy-Item keys/demo-signing.key $keyPath -Force
             $password = (Get-Content keys/demo-signing.password -Raw).Trim()
           } else {
-            $raw = $env:SECRET_KEY.Trim()
-            try { $decoded = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($raw)) } catch { $decoded = $raw }
+            $tauriKey = $env:SECRET_KEY.Trim()
+            try { $decoded = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($tauriKey)) } catch { $decoded = $tauriKey }
             Set-Content $keyPath $decoded -Encoding ascii
             $password = $env:SECRET_PASSWORD
           }
           "SIGNING_KEY_PATH=$keyPath" | Out-File $env:GITHUB_ENV -Append
           "SIGNING_KEY_PASSWORD=$password" | Out-File $env:GITHUB_ENV -Append
-          "TAURI_SIGNING_PRIVATE_KEY=$raw" | Out-File $env:GITHUB_ENV -Append
+          "TAURI_SIGNING_PRIVATE_KEY=$tauriKey" | Out-File $env:GITHUB_ENV -Append
           "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=$password" | Out-File $env:GITHUB_ENV -Append
       - name: Build and sign Go candidate
         working-directory: go-demo
