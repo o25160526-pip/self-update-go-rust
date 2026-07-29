@@ -11,28 +11,42 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"aead.dev/minisign"
 )
 
-// demoPrivateKey đọc private key demo trong repo (keys/) và giải mã.
+// Giai ma private key demo 1 lan cho ca package (scrypt van ton CPU).
+var (
+	demoKeyOnce sync.Once
+	demoKey     minisign.PrivateKey
+	demoKeyErr  error
+)
+
 func demoPrivateKey(t *testing.T) minisign.PrivateKey {
 	t.Helper()
-	keyBytes, err := os.ReadFile(filepath.Join("..", "..", "keys", "demo-signing.key"))
-	if err != nil {
-		t.Fatalf("doc demo private key: %v", err)
+	demoKeyOnce.Do(func() {
+		keyBytes, err := os.ReadFile(filepath.Join("..", "..", "keys", "demo-signing.key"))
+		if err != nil {
+			demoKeyErr = err
+			return
+		}
+		pwBytes, err := os.ReadFile(filepath.Join("..", "..", "keys", "demo-signing.password"))
+		if err != nil {
+			demoKeyErr = err
+			return
+		}
+		demoKey, demoKeyErr = minisign.DecryptKey(
+			strings.TrimSpace(string(pwBytes)),
+			[]byte(strings.TrimSpace(string(keyBytes))),
+		)
+	})
+	if demoKeyErr != nil {
+		t.Fatalf("doc/giai ma demo private key: %v", demoKeyErr)
 	}
-	pwBytes, err := os.ReadFile(filepath.Join("..", "..", "keys", "demo-signing.password"))
-	if err != nil {
-		t.Fatalf("doc demo password: %v", err)
-	}
-	key, err := minisign.DecryptKey(strings.TrimSpace(string(pwBytes)), []byte(strings.TrimSpace(string(keyBytes))))
-	if err != nil {
-		t.Fatalf("giai ma demo private key: %v", err)
-	}
-	return key
+	return demoKey
 }
 
 func TestDemoKeyKhopPinnedPublicKey(t *testing.T) {
@@ -47,7 +61,7 @@ func TestDemoKeyKhopPinnedPublicKey(t *testing.T) {
 	}
 }
 
-// setupService dựng 1 HTTPS server phục vụ manifest + artifact đã ký thật.
+// setupService dung 1 HTTPS server phuc vu manifest + artifact da ky that.
 func setupService(t *testing.T, artifact []byte, newVersion string) (*Service, string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -101,7 +115,7 @@ func TestServiceUpdateThanhCong(t *testing.T) {
 	exitCode := -1
 	svc.Exit = func(c int) { exitCode = c }
 	svc.Spawn = func(string, ...string) error {
-		// giả lập bản mới khởi động thành công
+		// gia lap ban moi khoi dong thanh cong
 		return WriteHealthMarker(HealthDir(svc.Dir), "1.0.1")
 	}
 
@@ -129,7 +143,7 @@ func TestServiceUpdateThanhCong(t *testing.T) {
 		t.Fatalf("thieu backup de rollback: %v", err)
 	}
 
-	// Tiến trình mới khởi động: health-check phải commit last-known-good.
+	// Tien trinh moi khoi dong: health-check phai commit last-known-good.
 	newProc := &Service{
 		Version: "1.0.1",
 		ExePath: exe,
@@ -156,7 +170,7 @@ func TestServiceRollbackKhiBanMoiKhongLen(t *testing.T) {
 	exitCode := -1
 	svc.Exit = func(c int) { exitCode = c }
 	spawns := 0
-	svc.Spawn = func(string, ...string) error { spawns++; return nil } // khong bao giờ healthy
+	svc.Spawn = func(string, ...string) error { spawns++; return nil }
 
 	if _, err := svc.CheckAndUpdate(context.Background()); err != nil {
 		t.Fatalf("khong mong doi loi: %v", err)

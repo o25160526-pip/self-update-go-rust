@@ -73,7 +73,7 @@ jobs:
         working-directory: go-demo
         run: |
           $ErrorActionPreference = 'Continue'
-          go test ./... -race 2>&1 | Tee-Object -FilePath go-test.log
+          go test ./... -race -timeout 300s 2>&1 | Tee-Object -FilePath go-test.log
           $code = $LASTEXITCODE
           if ($code -ne 0) {
             Get-Content go-test.log | Select-Object -Last 80 | ForEach-Object { Write-Host "::error::$_" }
