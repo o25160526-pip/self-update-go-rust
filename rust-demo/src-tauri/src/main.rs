@@ -22,7 +22,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             get_version,
             get_update_state,
-            rollback_previous
+            rollback_previous,
         ])
         .setup(move |app| {
             if let Err(e) = updater::health::complete_startup_health_check(app.handle()) {
