@@ -9,7 +9,7 @@
     .container { text-align: center; padding: 2rem; }
     .version { font-size: 2rem; font-weight: bold; color: #64b5f6; }
     .state { font-size: 1.2rem; margin-top: 1rem; padding: 0.5rem 1rem; border-radius: 8px; background: #16213e; display: inline-block; }
-    .log { margin-top: 2rem; text-align: left; background: #0d1117; padding: 1rem; border-radius: 8px; font-family: monospace; font-size: 0.85rem; max-width: 600px; max-height: 200px; overflow-y: auto; }
+    .log { margin-top: 2rem; text-align: left; background: #0d1117; padding: 1rem; border-radius: 8px; font-family: monospace; font-size: 0.85rem; max-width: 600px; max-height: 200px; overflow-y: auto; white-space: pre-wrap; }
     .info { color: #8b949e; font-size: 0.9rem; margin-top: 0.5rem; }
   </style>
 </head>
@@ -18,30 +18,28 @@
     <h1>Hello, version <span id="version" class="version">loading...</span></h1>
     <div class="info" id="info">OS: ... | Arch: ...</div>
     <div class="state" id="state">checking...</div>
-    <div class="log" id="log">Updater log:\n</div>
+    <div class="log" id="log">Updater log:\n[boot] waiting for Tauri bridge...</div>
   </div>
   <script>
-    const { invoke } = window.__TAURI__.core;
-    
     async function init() {
+      const log = document.getElementById('log');
       try {
-        const version = await invoke('get_version');
+        const bridge = window.__TAURI__;
+        if (!bridge?.core?.invoke) {
+          throw new Error('Tauri bridge unavailable: rebuild with app.withGlobalTauri=true');
+        }
+        const version = await bridge.core.invoke('get_version');
+        const state = await bridge.core.invoke('get_update_state');
         document.getElementById('version').textContent = version;
-        
-        const state = await invoke('get_update_state');
         document.getElementById('state').textContent = state;
-        
-        // OS + Arch
-        const os = window.__TAURI__?.os || navigator.platform;
-        document.getElementById('info').textContent = `OS: ${os} | Arch: ${navigator.userAgent}`;
-        
-        const log = document.getElementById('log');
+        document.getElementById('info').textContent = `OS: Windows | Arch: ${navigator.userAgent.includes('WOW64') ? 'x64' : 'amd64'}`;
         log.textContent = `Updater log:\n[init] version=${version}, state=${state}`;
-      } catch (e) {
-        document.getElementById('log').textContent = `Error: ${e}`;
+      } catch (error) {
+        document.getElementById('state').textContent = 'failed';
+        log.textContent = `Rust UI startup error:\n${error?.message ?? error}`;
+        console.error(error);
       }
     }
-    
     init();
   </script>
 </body>
