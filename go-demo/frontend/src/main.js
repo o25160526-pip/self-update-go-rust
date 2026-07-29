@@ -1,43 +1,33 @@
 import './style.css';
 import './app.css';
 
-import logo from './assets/images/logo-universal.png';
-import {Greet} from '../wailsjs/go/main/App';
+import {GetVersion, GetInfo, GetUpdateState} from '../wailsjs/go/main/App';
 
-document.querySelector('#app').innerHTML = `
-    <img id="logo" class="logo">
-      <div class="result" id="result">Please enter your name below 👇</div>
-      <div class="input-box" id="input">
-        <input class="input" id="name" type="text" autocomplete="off" />
-        <button class="btn" onclick="greet()">Greet</button>
-      </div>
-    </div>
-`;
-document.getElementById('logo').src = logo;
+async function init() {
+    const versionEl = document.getElementById('version');
+    const infoEl = document.getElementById('info');
+    const stateEl = document.getElementById('state');
+    const logEl = document.getElementById('log');
 
-let nameElement = document.getElementById("name");
-nameElement.focus();
-let resultElement = document.getElementById("result");
-
-// Setup the greet function
-window.greet = function () {
-    // Get name
-    let name = nameElement.value;
-
-    // Check if the input is empty
-    if (name === "") return;
-
-    // Call App.Greet(name)
     try {
-        Greet(name)
-            .then((result) => {
-                // Update result with data back from App.Greet()
-                resultElement.innerText = result;
-            })
-            .catch((err) => {
-                console.error(err);
-            });
+        const version = await GetVersion();
+        versionEl.textContent = version;
+
+        const info = await GetInfo();
+        infoEl.textContent = `OS: ${info.os} | Arch: ${info.arch}`;
+
+        const state = await GetUpdateState();
+        stateEl.textContent = state;
+
+        logEl.textContent = `Updater log:\n[init] version=${version}, os=${info.os}, arch=${info.arch}, state=${state}`;
     } catch (err) {
+        logEl.textContent = `Error: ${err}`;
         console.error(err);
     }
-};
+}
+
+// Remove old #app content and run init
+const appEl = document.getElementById('app');
+if (appEl) appEl.style.display = 'none';
+
+init();

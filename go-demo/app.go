@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"runtime"
+	"go-demo/internal/version"
 )
 
 // App struct
@@ -19,6 +21,29 @@ func NewApp() *App {
 // so we can call the runtime methods
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+}
+
+// GetVersion returns the current app version.
+func (a *App) GetVersion() string {
+	return version.Version
+}
+
+// GetInfo returns app name, version, OS, and architecture.
+func (a *App) GetInfo() map[string]string {
+	return map[string]string{
+		"app":     "go-demo",
+		"version": version.Version,
+		"os":      runtime.GOOS,
+		"arch":    runtime.GOARCH,
+	}
+}
+
+// GetUpdateState returns the current updater state.
+// States: checking, up-to-date, update-available, downloading, verifying,
+// installing, restarting, failed, rolled-back
+func (a *App) GetUpdateState() string {
+	// P2: will integrate with real updater
+	return "checking"
 }
 
 // Greet returns a greeting for the given name
