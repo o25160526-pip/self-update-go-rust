@@ -42,18 +42,41 @@ jobs:
         run: npm ci; npm run build
       - name: Test
         working-directory: go-demo
-        run: go test ./... -race
+        run: |
+          $ErrorActionPreference = 'Continue'
+          go test ./... -race 2>&1 | Tee-Object -FilePath go-test.log
+          $code = $LASTEXITCODE
+          if ($code -ne 0) {
+            Get-Content go-test.log | Select-Object -Last 60 | ForEach-Object { Write-Host "::error::$_" }
+            throw "go test failed with exit code $code"
+          }
       - name: Build Windows app
         working-directory: go-demo
         run: |
+          $ErrorActionPreference = 'Continue'
           $version = if ("${{ github.ref_type }}" -eq "tag") { "${{ github.ref_name }}".TrimStart('v') } else { "${{ inputs.version || '1.0.0' }}" }
           wails build -clean -ldflags "-X go-demo/internal/version.Version=$version" 2>&1 | Tee-Object -FilePath wails-build.log
-          if ($LASTEXITCODE -ne 0) {
-            Get-Content wails-build.log | Select-String -Pattern 'error|fatal|cannot|failed|undefined' | Select-Object -First 8 | ForEach-Object { Write-Host "::error::$($_.Line)" }
-            throw 'wails build failed'
+          $code = $LASTEXITCODE
+          if ($code -ne 0) {
+            Get-Content wails-build.log | Select-Object -Last 60 | ForEach-Object { Write-Host "::error::$_" }
+            throw "wails build failed with exit code $code"
           }
-          $exe = Get-ChildItem build/bin/*.exe | Select-Object -First 1
-          Copy-Item $exe.FullName "build/bin/go-demo-windows-x64.exe"
+          $exe = Get-ChildItem build/bin/*.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $exe) {
+            Get-Content wails-build.log | Select-Object -Last 60 | ForEach-Object { Write-Host "::error::$_" }
+            throw 'wails build produced no exe in build/bin'
+          }
+          Copy-Item $exe.FullName "build/bin/go-demo-windows-x64.exe" -Force
+      - name: Upload build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-demo-logs
+          path: |
+            go-demo/go-test.log
+            go-demo/wails-build.log
+          if-no-files-found: ignore
+          retention-days: 7
       - uses: actions/upload-artifact@v4
         with:
           name: go-demo-windows-x64
@@ -74,7 +97,9 @@ jobs:
           $version = "${{ github.ref_name }}".TrimStart('v')
           Push-Location ../rust-demo
           npx tauri signer sign ../go-demo/build/bin/go-demo-windows-x64.exe
+          if ($LASTEXITCODE -ne 0) { throw 'tauri signer sign failed' }
           Pop-Location
+          if (!(Test-Path build/bin/go-demo-windows-x64.exe.sig)) { throw 'signature file was not generated' }
           ./scripts/generate-manifest.ps1 -Version $version -Artifact build/bin/go-demo-windows-x64.exe -Signature build/bin/go-demo-windows-x64.exe.sig -Repository "${{ github.repository }}"
           (Get-FileHash build/bin/go-demo-windows-x64.exe -Algorithm SHA256).Hash.ToLower() + ' go-demo-windows-x64.exe' | Set-Content build/bin/go-demo-windows-x64.exe.sha256
       - name: Publish Go release assets
