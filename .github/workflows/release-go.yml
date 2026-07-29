@@ -1,28 +1,60 @@
 name: Build and Release Go Demo
+
 on:
   push:
     branches: [main, "release/v*"]
     tags: ["v*"]
-permissions: { contents: write }
+
+permissions:
+  contents: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build:
     runs-on: windows-latest
-    defaults: { run: { shell: pwsh } }
+    defaults:
+      run:
+        shell: pwsh
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
-        with: { go-version: '1.25.12', cache-dependency-path: go-demo/go.sum }
+        with:
+          go-version: "1.25.12"
+          cache-dependency-path: go-demo/go.sum
       - uses: actions/setup-node@v7
-        with: { node-version: '24', cache: npm, cache-dependency-path: go-demo/frontend/package-lock.json }
-      - name: Resolve version
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: go-demo/frontend/package-lock.json
+      - name: Resolve version and release mode
         id: ver
         run: |
-          $ref="${{ github.ref }}"; if($ref -like 'refs/tags/v*'){$v=$ref.Substring(11);$release='true'}elseif($ref -like 'refs/heads/release/v*'){$v=$ref.Substring(20);$release='true'}else{$v='1.0.0';$release='false'}
-          "version=$v","tag=v$v","release=$release" | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
+          $ref = "${{ github.ref }}"
+          if ($ref -like "refs/tags/v*") { $v = $ref.Substring(11); $release = "true" }
+          elseif ($ref -like "refs/heads/release/v*") { $v = $ref.Substring(20); $release = "true" }
+          else { $v = "1.0.0"; $release = "false" }
+          "version=$v" | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "tag=v$v" | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "release=$release" | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
       - name: Resolve signing key
-        env: { SECRET_KEY: '${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}', SECRET_PASSWORD: '${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}' }
+        env:
+          SECRET_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          SECRET_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
-          $p=Join-Path $env:RUNNER_TEMP 'signing.key'; if([string]::IsNullOrWhiteSpace($env:SECRET_KEY)){Copy-Item keys/demo-signing.key $p; $pw=(Get-Content keys/demo-signing.password -Raw).Trim()}else{$raw=$env:SECRET_KEY.Trim();try{$raw=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($raw))}catch{};Set-Content $p $raw -Encoding ascii;$pw=$env:SECRET_PASSWORD}; "SIGNING_KEY_PATH=$p","SIGNING_KEY_PASSWORD=$pw" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          $keyPath = Join-Path $env:RUNNER_TEMP "signing.key"
+          if ([string]::IsNullOrWhiteSpace($env:SECRET_KEY)) {
+            Copy-Item keys/demo-signing.key $keyPath -Force
+            $password = (Get-Content keys/demo-signing.password -Raw).Trim()
+          } else {
+            $raw = $env:SECRET_KEY.Trim()
+            try { $decoded = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($raw)) } catch { $decoded = $raw }
+            Set-Content -Path $keyPath -Value $decoded -Encoding ascii
+            $password = $env:SECRET_PASSWORD
+          }
+          "SIGNING_KEY_PATH=$keyPath" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "SIGNING_KEY_PASSWORD=$password" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
       - name: Install Wails
         run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
       - name: Build frontend
@@ -33,16 +65,30 @@ jobs:
         run: go test ./... -race -timeout 300s
       - name: Build Windows app
         working-directory: go-demo
-        run: wails build -clean -ldflags "-X go-demo/internal/version.Version=${{ steps.ver.outputs.version }}"; $e=Get-ChildItem build/bin/*.exe|Select-Object -First 1; if(!$e){throw 'no exe'}; Copy-Item $e.FullName build/bin/go-demo-windows-x64.exe -Force
+        run: |
+          wails build -clean -ldflags "-X go-demo/internal/version.Version=${{ steps.ver.outputs.version }}"
+          $exe = Get-ChildItem build/bin/*.exe | Select-Object -First 1
+          if (-not $exe) { throw "wails build produced no exe" }
+          Copy-Item $exe.FullName build/bin/go-demo-windows-x64.exe -Force
       - name: Sign and verify
         working-directory: go-demo
-        run: go run ./cmd/sign-artifact -key "$env:SIGNING_KEY_PATH" -password "$env:SIGNING_KEY_PASSWORD" -in build/bin/go-demo-windows-x64.exe -out build/bin/go-demo-windows-x64.exe.sig; ./scripts/generate-manifest.ps1 -Version "${{ steps.ver.outputs.version }}" -Artifact build/bin/go-demo-windows-x64.exe -Signature build/bin/go-demo-windows-x64.exe.sig -Repository "${{ github.repository }}"; go run ./cmd/verify-artifact -manifest manifest-go.json -file build/bin/go-demo-windows-x64.exe
+        run: |
+          go run ./cmd/sign-artifact -key "$env:SIGNING_KEY_PATH" -password "$env:SIGNING_KEY_PASSWORD" -in build/bin/go-demo-windows-x64.exe -out build/bin/go-demo-windows-x64.exe.sig
+          ./scripts/generate-manifest.ps1 -Version "${{ steps.ver.outputs.version }}" -Artifact build/bin/go-demo-windows-x64.exe -Signature build/bin/go-demo-windows-x64.exe.sig -Repository "${{ github.repository }}"
+          go run ./cmd/verify-artifact -manifest manifest-go.json -file build/bin/go-demo-windows-x64.exe
       - uses: actions/upload-artifact@v4.6.2
-        with: { name: go-demo-windows-x64, path: |-
+        with:
+          name: go-demo-windows-x64
+          path: |
             go-demo/build/bin/go-demo-windows-x64.exe
             go-demo/build/bin/go-demo-windows-x64.exe.sig
-            go-demo/manifest-go.json }
+            go-demo/manifest-go.json
+          if-no-files-found: error
       - name: Publish release
         if: steps.ver.outputs.release == 'true'
-        env: { GH_TOKEN: '${{ github.token }}' }
-        run: gh release create "${{ steps.ver.outputs.tag }}" --target "${{ github.sha }}" --title "Release ${{ steps.ver.outputs.tag }}" --notes "Automated release" 2>$null; gh release upload "${{ steps.ver.outputs.tag }}" go-demo/build/bin/go-demo-windows-x64.exe go-demo/build/bin/go-demo-windows-x64.exe.sig go-demo/manifest-go.json --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "${{ steps.ver.outputs.tag }}" *> $null
+          if ($LASTEXITCODE -ne 0) { gh release create "${{ steps.ver.outputs.tag }}" --target "${{ github.sha }}" --title "Release ${{ steps.ver.outputs.tag }}" --notes "Automated release" }
+          gh release upload "${{ steps.ver.outputs.tag }}" go-demo/build/bin/go-demo-windows-x64.exe go-demo/build/bin/go-demo-windows-x64.exe.sig go-demo/manifest-go.json --clobber
