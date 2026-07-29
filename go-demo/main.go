@@ -24,6 +24,7 @@ func main() {
 	printStateFlag := flag.Bool("print-update-state", false, "In trang thai updater roi thoat")
 	offlineTestFlag := flag.Bool("offline-test", false, "Dung mock provider, khong goi mang")
 	checkOnlyFlag := flag.Bool("check-only", false, "Chay luong update o che do CLI roi thoat")
+	silentUpdateFlag := flag.Bool("silent-update", false, "Chay self-update khong hien giao dien, sau do thoat")
 	updatedFrom := flag.String("updated-from", "", "Version truoc khi update (do tien trinh cu truyen vao)")
 	rolledBack := flag.Bool("rolled-back", false, "Tien trinh nay chay sau khi rollback")
 	flag.Parse()
@@ -54,11 +55,12 @@ func main() {
 		fmt.Fprintln(os.Stderr, "[warn] startup health-check:", err)
 	}
 
-	if *checkOnlyFlag {
+	if *checkOnlyFlag || *silentUpdateFlag {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
 		if _, err := svc.CheckAndUpdate(ctx); err != nil {
 			fmt.Fprintln(os.Stderr, "[error]", err)
+			os.Exit(1)
 		}
 		for _, line := range svc.Logs() {
 			fmt.Println(line)

@@ -16,6 +16,7 @@ fn main() {
         return;
     }
     let offline = args.iter().any(|a| a == "--offline-test");
+    let silent = args.iter().any(|a| a == "--silent-update");
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
@@ -30,7 +31,7 @@ fn main() {
             }
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                updater::check::check_on_startup(handle, offline).await
+                updater::check::check_on_startup(handle, offline, silent).await
             });
             Ok(())
         })
