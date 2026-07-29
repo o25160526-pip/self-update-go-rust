@@ -36,7 +36,7 @@ jobs:
           echo "tag=v${version}-candidate" >> "$GITHUB_OUTPUT"
           echo "stable=$stable" >> "$GITHUB_OUTPUT"
 
-  build-candidate:
+  go-candidate:
     needs: prepare
     runs-on: windows-latest
     defaults:
@@ -47,18 +47,23 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: "1.25.12"
+          cache: true
           cache-dependency-path: go-demo/go.sum
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: "1.94.1"
-          targets: x86_64-pc-windows-msvc
       - uses: actions/setup-node@v7
         with:
           node-version: "24"
           cache: npm
-          cache-dependency-path: |
-            go-demo/frontend/package-lock.json
-            rust-demo/package-lock.json
+          cache-dependency-path: go-demo/frontend/package-lock.json
+      - name: Cache Go build and Wails tool
+        uses: actions/cache@v4.2.3
+        with:
+          path: |
+            ~\go\bin
+            ~\go\pkg\mod
+            ~\go\pkg\build-cache
+          key: go-wails-${{ runner.os }}-go1.25.12-${{ hashFiles('go-demo/go.sum') }}-v2
+          restore-keys: |
+            go-wails-${{ runner.os }}-go1.25.12-
       - name: Resolve signing key
         env:
           SECRET_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -77,55 +82,93 @@ jobs:
           }
           "SIGNING_KEY_PATH=$keyPath" | Out-File $env:GITHUB_ENV -Append
           "SIGNING_KEY_PASSWORD=$password" | Out-File $env:GITHUB_ENV -Append
-          "TAURI_SIGNING_PRIVATE_KEY=$tauriKey" | Out-File $env:GITHUB_ENV -Append
-          "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=$password" | Out-File $env:GITHUB_ENV -Append
       - name: Build and sign Go candidate
         working-directory: go-demo
         run: |
-          npm --prefix frontend ci
+          npm --prefix frontend ci --prefer-offline
           npm --prefix frontend run build
-          go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
+          if (-not (Test-Path "$HOME\go\bin\wails.exe")) { go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0 }
           go test ./... -race -timeout 300s
-          wails build -clean -ldflags "-X go-demo/internal/version.Version=${{ needs.prepare.outputs.version }}"
+          & "$HOME\go\bin\wails.exe" build -clean -ldflags "-X go-demo/internal/version.Version=${{ needs.prepare.outputs.version }}"
           $exe = Get-ChildItem build/bin/*.exe | Select-Object -First 1
           if (-not $exe) { throw 'Wails produced no executable' }
           Copy-Item $exe.FullName build/bin/go-demo-windows-x64.exe -Force
           go run ./cmd/sign-artifact -key "$env:SIGNING_KEY_PATH" -password "$env:SIGNING_KEY_PASSWORD" -in build/bin/go-demo-windows-x64.exe -out build/bin/go-demo-windows-x64.exe.sig
           ./scripts/generate-manifest.ps1 -Version "${{ needs.prepare.outputs.version }}" -Tag "${{ needs.prepare.outputs.tag }}" -Artifact build/bin/go-demo-windows-x64.exe -Signature build/bin/go-demo-windows-x64.exe.sig -Repository "${{ github.repository }}"
+      - uses: actions/upload-artifact@v4.6.2
+        with:
+          name: go-candidate
+          path: |
+            go-demo/build/bin/go-demo-windows-x64.exe
+            go-demo/build/bin/go-demo-windows-x64.exe.sig
+            go-demo/manifest-go.json
+          if-no-files-found: error
+
+  rust-candidate:
+    needs: prepare
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.94.1"
+          targets: x86_64-pc-windows-msvc
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: rust-demo/package-lock.json
+      - name: Cache Cargo registry, git, and target
+        uses: actions/cache@v4.2.3
+        with:
+          path: |
+            ~\.cargo\registry
+            ~\.cargo\git
+            rust-demo\target
+          key: rust-tauri-${{ runner.os }}-1.94.1-${{ hashFiles('rust-demo/Cargo.lock') }}-${{ hashFiles('rust-demo/src-tauri/Cargo.lock') }}-v2
+          restore-keys: |
+            rust-tauri-${{ runner.os }}-1.94.1-
+      - name: Resolve signing key
+        env:
+          SECRET_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          SECRET_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:SECRET_KEY)) { $key=(Get-Content keys/demo-signing.key.b64 -Raw).Trim(); $password=(Get-Content keys/demo-signing.password -Raw).Trim() } else { $key=$env:SECRET_KEY.Trim(); $password=$env:SECRET_PASSWORD }
+          "TAURI_SIGNING_PRIVATE_KEY=$key" | Out-File $env:GITHUB_ENV -Append
+          "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=$password" | Out-File $env:GITHUB_ENV -Append
       - name: Build Rust candidate
         working-directory: rust-demo
         run: |
-          npm ci
-          $p='src-tauri/tauri.conf.json'
-          $c=Get-Content $p -Raw | ConvertFrom-Json
-          $c.version='${{ needs.prepare.outputs.version }}'
-          $c | ConvertTo-Json -Depth 20 | Set-Content $p -Encoding utf8
+          npm ci --prefer-offline
+          $p='src-tauri/tauri.conf.json'; $c=Get-Content $p -Raw | ConvertFrom-Json; $c.version='${{ needs.prepare.outputs.version }}'; $c | ConvertTo-Json -Depth 20 | Set-Content $p -Encoding utf8
+          cargo test --manifest-path logic/Cargo.toml --locked
           npm run tauri build -- --target x86_64-pc-windows-msvc
       - name: Collect Rust candidate
         run: |
           $b=Get-ChildItem rust-demo/target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe | Select-Object -First 1
           if (-not $b) { throw 'Tauri produced no NSIS installer' }
           New-Item candidate -ItemType Directory -Force | Out-Null
-          Copy-Item go-demo/build/bin/go-demo-windows-x64.exe candidate/
-          Copy-Item go-demo/build/bin/go-demo-windows-x64.exe.sig candidate/
-          Copy-Item go-demo/manifest-go.json candidate/
           Copy-Item $b.FullName candidate/rust-demo-windows-x64-setup.exe
           Copy-Item ($b.FullName + '.sig') candidate/rust-demo-windows-x64-setup.exe.sig
           ./rust-demo/scripts/generate-latest.ps1 -Version '${{ needs.prepare.outputs.version }}' -Tag '${{ needs.prepare.outputs.tag }}' -Bundle candidate/rust-demo-windows-x64-setup.exe -Signature candidate/rust-demo-windows-x64-setup.exe.sig -Repository '${{ github.repository }}'
           Copy-Item latest-rust.json candidate/
       - uses: actions/upload-artifact@v4.6.2
         with:
-          name: candidate-assets
+          name: rust-candidate
           path: candidate
           if-no-files-found: error
 
   publish-candidate:
-    needs: [prepare, build-candidate]
+    needs: [prepare, go-candidate, rust-candidate]
     runs-on: windows-latest
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: candidate-assets
+          pattern: '*-candidate'
+          merge-multiple: true
           path: candidate
       - name: Publish prerelease
         env:

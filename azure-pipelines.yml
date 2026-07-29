@@ -12,66 +12,105 @@ variables:
   nodeVersion: '24.x'
   goVersion: '1.25.12'
   rustToolchain: '1.94.1'
+  npm_config_cache: '$(Pipeline.Workspace)\\.npm'
+  GOMODCACHE: '$(Pipeline.Workspace)\\.go-mod'
+  GOCACHE: '$(Pipeline.Workspace)\\.go-build'
+  CARGO_HOME: '$(Pipeline.Workspace)\\.cargo'
+  CARGO_TARGET_DIR: '$(Pipeline.Workspace)\\.rust-target'
 
-steps:
-- checkout: self
-  fetchDepth: 0
+jobs:
+- job: Go
+  displayName: Go build
+  steps:
+  - checkout: self
+    fetchDepth: 0
+  - task: Cache@2
+    displayName: Cache Go and npm
+    inputs:
+      key: 'go | "$(Agent.OS)" | go-demo/go.sum'
+      restoreKeys: |
+        go | "$(Agent.OS)"
+      path: '$(GOMODCACHE)'
+  - task: Cache@2
+    displayName: Cache Go compiler and Wails
+    inputs:
+      key: 'go-build | "$(Agent.OS)" | go-demo/go.sum'
+      restoreKeys: |
+        go-build | "$(Agent.OS)"
+      path: '$(GOCACHE)'
+  - task: Cache@2
+    displayName: Cache npm packages
+    inputs:
+      key: 'npm | "$(Agent.OS)" | go-demo/frontend/package-lock.json'
+      restoreKeys: |
+        npm | "$(Agent.OS)"
+      path: '$(npm_config_cache)'
+  - task: UseNode@1
+    inputs:
+      version: $(nodeVersion)
+  - powershell: |
+      $ErrorActionPreference = 'Stop'
+      Invoke-WebRequest https://go.dev/dl/go1.25.12.windows-amd64.msi -OutFile $(Agent.TempDirectory)\go.msi
+      Start-Process msiexec.exe -ArgumentList '/i','$(Agent.TempDirectory)\go.msi','/qn','/norestart' -Wait
+      $env:PATH = "$env:PATH;C:\Program Files\Go\bin"
+      go version
+    displayName: Install Go
+  - powershell: |
+      $ErrorActionPreference = 'Stop'
+      $env:npm_config_cache = '$(npm_config_cache)'
+      Push-Location go-demo\frontend; npm ci --prefer-offline; npm run build; Pop-Location
+      Push-Location go-demo
+      go test ./... -race -timeout 300s
+      if (-not (Test-Path "$env:GOPATH\bin\wails.exe")) { go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0 }
+      & "$env:GOPATH\bin\wails.exe" build -clean -ldflags "-X go-demo/internal/version.Version=1.0.0"
+      Pop-Location
+    displayName: Build and test Go
+  - task: PublishPipelineArtifact@1
+    inputs:
+      targetPath: '$(Build.SourcesDirectory)\go-demo\build\bin'
+      artifact: 'go-demo-windows'
 
-- task: UseNode@1
-  displayName: Use Node.js 24
-  inputs:
-    version: $(nodeVersion)
-
-- powershell: |
-    Set-StrictMode -Version Latest
-    $ErrorActionPreference = 'Stop'
-    Invoke-WebRequest https://go.dev/dl/go1.25.12.windows-amd64.msi -OutFile $(Agent.TempDirectory)\go.msi
-    Start-Process msiexec.exe -ArgumentList '/i', '$(Agent.TempDirectory)\go.msi', '/qn', '/norestart' -Wait
-    $env:PATH = "$env:PATH;C:\Program Files\Go\bin"
-    go version
-  displayName: Install Go
-
-- powershell: |
-    Set-StrictMode -Version Latest
-    $ErrorActionPreference = 'Stop'
-    rustup toolchain install $(rustToolchain)
-    rustup default $(rustToolchain)
-    rustup target add x86_64-pc-windows-msvc
-    cargo --version
-  displayName: Install Rust
-
-- powershell: |
-    Set-StrictMode -Version Latest
-    $ErrorActionPreference = 'Stop'
-    Push-Location go-demo\frontend; npm ci; npm run build; Pop-Location
-    Push-Location go-demo
-    go test ./... -race -timeout 300s
-    go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
-    wails build -clean -ldflags "-X go-demo/internal/version.Version=1.0.0"
-    Pop-Location
-  displayName: Build and test Go
-
-- powershell: |
-    Set-StrictMode -Version Latest
-    $ErrorActionPreference = 'Stop'
-    Push-Location rust-demo
-    npm ci
-    cargo fmt --all
-    cargo fmt --all -- --check
-    cargo clippy --manifest-path logic/Cargo.toml --all-targets -- -D warnings
-    cargo test --manifest-path logic/Cargo.toml
-    npm run tauri build -- --target x86_64-pc-windows-msvc
-    Pop-Location
-  displayName: Build and test Rust
-
-- task: PublishPipelineArtifact@1
-  displayName: Publish Go artifacts
-  inputs:
-    targetPath: '$(Build.SourcesDirectory)\go-demo\build\bin'
-    artifact: 'go-demo-windows'
-
-- task: PublishPipelineArtifact@1
-  displayName: Publish Rust artifacts
-  inputs:
-    targetPath: '$(Build.SourcesDirectory)\rust-demo\target\x86_64-pc-windows-msvc\release\bundle'
-    artifact: 'rust-demo-windows'
+- job: Rust
+  displayName: Rust build
+  steps:
+  - checkout: self
+    fetchDepth: 0
+  - task: Cache@2
+    displayName: Cache Cargo registry git target
+    inputs:
+      key: 'cargo | "$(Agent.OS)" | rust-demo/Cargo.lock | rust-demo/src-tauri/Cargo.lock'
+      restoreKeys: |
+        cargo | "$(Agent.OS)"
+      path: '$(CARGO_HOME)\registry\n$(CARGO_HOME)\git\n$(CARGO_TARGET_DIR)'
+  - task: Cache@2
+    displayName: Cache npm packages
+    inputs:
+      key: 'npm-rust | "$(Agent.OS)" | rust-demo/package-lock.json'
+      restoreKeys: |
+        npm-rust | "$(Agent.OS)"
+      path: '$(npm_config_cache)'
+  - task: UseNode@1
+    inputs:
+      version: $(nodeVersion)
+  - powershell: |
+      $ErrorActionPreference = 'Stop'
+      rustup toolchain install $(rustToolchain) --profile minimal
+      rustup default $(rustToolchain)
+      rustup target add x86_64-pc-windows-msvc
+      cargo --version
+    displayName: Install Rust
+  - powershell: |
+      $ErrorActionPreference = 'Stop'
+      $env:npm_config_cache = '$(npm_config_cache)'
+      Push-Location rust-demo
+      npm ci --prefer-offline
+      cargo fmt --all -- --check
+      cargo clippy --manifest-path logic/Cargo.toml --all-targets -- -D warnings
+      cargo test --manifest-path logic/Cargo.toml --locked
+      npm run tauri build -- --target x86_64-pc-windows-msvc
+      Pop-Location
+    displayName: Build and test Rust
+  - task: PublishPipelineArtifact@1
+    inputs:
+      targetPath: '$(CARGO_TARGET_DIR)\x86_64-pc-windows-msvc\release\bundle'
+      artifact: 'rust-demo-windows'
