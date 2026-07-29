@@ -2,14 +2,8 @@ name: Build and Release Rust Demo
 
 on:
   push:
-    branches: [main]
+    branches: [main, "release/v*"]
     tags: ["v*"]
-  workflow_dispatch:
-    inputs:
-      version:
-        description: Version without v prefix
-        required: true
-        default: "1.0.0"
 
 permissions:
   contents: write
@@ -49,26 +43,50 @@ jobs:
           node-version: "22"
           cache: npm
           cache-dependency-path: rust-demo/package-lock.json
-      - name: Install dependencies
-        working-directory: rust-demo
-        run: npm ci
-      - name: Require signing key for release
-        if: github.ref_type == 'tag'
+
+      - name: Resolve version and release mode
+        id: ver
+        run: |
+          $ref = "${{ github.ref }}"
+          if ($ref -like "refs/tags/v*") { $v = $ref.Substring(11); $release = "true" }
+          elseif ($ref -like "refs/heads/release/v*") { $v = $ref.Substring(20); $release = "true" }
+          else { $v = "1.0.0"; $release = "false" }
+          Write-Host "version=$v release=$release"
+          "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "tag=v$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "release=$release" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Resolve signing key (secret -> fallback demo key trong repo)
         env:
-          SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-        run: if ([string]::IsNullOrWhiteSpace($env:SIGNING_KEY)) { throw 'Missing TAURI_SIGNING_PRIVATE_KEY secret' }
-      - name: Configure unsigned CI build
-        if: github.ref_type != 'tag'
+          SECRET_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          SECRET_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:SECRET_KEY)) {
+            $key = (Get-Content keys/demo-signing.key.b64 -Raw).Trim()
+            $password = (Get-Content keys/demo-signing.password -Raw).Trim()
+            Write-Host "Signing key: demo key trong repo (khong tim thay secret)"
+          } else {
+            $key = $env:SECRET_KEY.Trim()
+            $password = $env:SECRET_PASSWORD
+            Write-Host "Signing key: GitHub Secrets"
+          }
+          "TAURI_SIGNING_PRIVATE_KEY=$key" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=$password" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Set app version
         run: |
           $path = 'rust-demo/src-tauri/tauri.conf.json'
           $config = Get-Content $path -Raw | ConvertFrom-Json
-          $config.bundle.createUpdaterArtifacts = $false
+          $config.version = "${{ steps.ver.outputs.version }}"
           $config | ConvertTo-Json -Depth 20 | Set-Content $path -Encoding utf8
+          Write-Host "tauri.conf.json version = $($config.version)"
+
+      - name: Install dependencies
+        working-directory: rust-demo
+        run: npm ci
+
       - name: Build Tauri
         working-directory: rust-demo
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ github.ref_type == 'tag' && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           $ErrorActionPreference = 'Continue'
           npm run tauri build -- --target x86_64-pc-windows-msvc 2>&1 | Tee-Object -FilePath tauri-build.log
@@ -77,6 +95,7 @@ jobs:
             Get-Content tauri-build.log | Select-Object -Last 60 | ForEach-Object { Write-Host "::error::$_" }
             throw "tauri build failed with exit code $code"
           }
+
       - name: Upload build logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -85,30 +104,43 @@ jobs:
           path: rust-demo/tauri-build.log
           if-no-files-found: ignore
           retention-days: 7
+
       - name: Collect artifact
         run: |
           $bundle = Get-ChildItem rust-demo/target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe -ErrorAction SilentlyContinue | Select-Object -First 1
           if (-not $bundle) { throw 'NSIS setup exe was not produced' }
           New-Item artifacts -ItemType Directory -Force | Out-Null
           Copy-Item $bundle.FullName artifacts/rust-demo-windows-x64-setup.exe -Force
-          if (Test-Path ($bundle.FullName + '.sig')) { Copy-Item ($bundle.FullName + '.sig') artifacts/rust-demo-windows-x64-setup.exe.sig -Force }
+          if (!(Test-Path ($bundle.FullName + '.sig'))) { throw 'Updater signature (.sig) was not generated' }
+          Copy-Item ($bundle.FullName + '.sig') artifacts/rust-demo-windows-x64-setup.exe.sig -Force
+          (Get-FileHash artifacts/rust-demo-windows-x64-setup.exe -Algorithm SHA256).Hash.ToLower() + '  rust-demo-windows-x64-setup.exe' | Set-Content artifacts/rust-demo-windows-x64-setup.exe.sha256
+          ./rust-demo/scripts/generate-latest.ps1 -Version "${{ steps.ver.outputs.version }}" -Bundle artifacts/rust-demo-windows-x64-setup.exe -Signature artifacts/rust-demo-windows-x64-setup.exe.sig -Repository "${{ github.repository }}"
+          if (!(Test-Path latest-rust.json)) { throw 'latest-rust.json was not generated' }
+          Get-Content latest-rust.json
+
       - uses: actions/upload-artifact@v4
         with:
           name: rust-demo-windows-x64
-          path: artifacts/rust-demo-windows-x64-setup.exe
+          path: |
+            artifacts/rust-demo-windows-x64-setup.exe
+            artifacts/rust-demo-windows-x64-setup.exe.sig
+            artifacts/rust-demo-windows-x64-setup.exe.sha256
+            latest-rust.json
           if-no-files-found: error
-      - name: Generate release metadata
-        if: github.ref_type == 'tag'
-        run: |
-          if (!(Test-Path artifacts/rust-demo-windows-x64-setup.exe.sig)) { throw 'Signed updater artifact was not generated' }
-          $version = "${{ github.ref_name }}".TrimStart('v')
-          ./rust-demo/scripts/generate-latest.ps1 -Version $version -Bundle artifacts/rust-demo-windows-x64-setup.exe -Signature artifacts/rust-demo-windows-x64-setup.exe.sig -Repository "${{ github.repository }}"
-          if (!(Test-Path latest-rust.json)) { throw 'latest-rust.json was not generated' }
-          (Get-FileHash artifacts/rust-demo-windows-x64-setup.exe -Algorithm SHA256).Hash.ToLower() + '  rust-demo-windows-x64-setup.exe' | Set-Content artifacts/rust-demo-windows-x64-setup.exe.sha256
+
       - name: Publish Rust release assets
-        if: github.ref_type == 'tag'
+        if: steps.ver.outputs.release == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release view "${{ github.ref_name }}" *> $null; if ($LASTEXITCODE -ne 0) { gh release create "${{ github.ref_name }}" --title "Release ${{ github.ref_name }}" --notes "Automated desktop update demo release." }
-          gh release upload "${{ github.ref_name }}" artifacts/rust-demo-windows-x64-setup.exe artifacts/rust-demo-windows-x64-setup.exe.sig artifacts/rust-demo-windows-x64-setup.exe.sha256 latest-rust.json --clobber
+          $tag = "${{ steps.ver.outputs.tag }}"
+          for ($i = 0; $i -lt 5; $i++) {
+            gh release view $tag *> $null
+            if ($LASTEXITCODE -eq 0) { break }
+            gh release create $tag --target "${{ github.sha }}" --title "Release $tag" --notes "Automated desktop update demo release ($tag)." *> $null
+            if ($LASTEXITCODE -eq 0) { break }
+            Start-Sleep -Seconds 5
+          }
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -ne 0) { throw "khong tao duoc release $tag" }
+          gh release upload $tag artifacts/rust-demo-windows-x64-setup.exe artifacts/rust-demo-windows-x64-setup.exe.sig artifacts/rust-demo-windows-x64-setup.exe.sha256 latest-rust.json --clobber

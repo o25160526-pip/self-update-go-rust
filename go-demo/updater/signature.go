@@ -8,9 +8,8 @@ import (
 	"aead.dev/minisign"
 )
 
-// PublicKey is the Tauri-compatible Minisign public key pinned in both clients.
-const PublicKey = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDQwOUZEREFCMkJBMDMwNzgKUldSNE1LQXJxOTJmUVBTSElkOHRwY2gxOXp1dmgrRVpGdXNpUGdCMkhRR25vSmY1dGo5US91K3YK"
-
+// VerifyPinnedSignature xác minh signature (base64 của file .sig minisign) bằng
+// public key pin trong keys.go. Không nhận key từ bên ngoài để tránh bị thay key.
 func VerifyPinnedSignature(data []byte, encodedSignature string) error {
 	publicText, err := base64.StdEncoding.DecodeString(PublicKey)
 	if err != nil {

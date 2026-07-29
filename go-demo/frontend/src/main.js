@@ -7,21 +7,35 @@ function appBinding(name) {
     return fn;
 }
 
+async function refresh(els) {
+    const [state, logs] = await Promise.all([
+        appBinding('GetUpdateState')(),
+        appBinding('GetLogs')(),
+    ]);
+    els.state.textContent = state;
+    const lines = Array.isArray(logs) ? logs : [];
+    els.log.textContent = ['Updater log:', ...lines].join('\n');
+    els.log.scrollTop = els.log.scrollHeight;
+}
+
 async function init() {
-    const versionEl = document.getElementById('version');
-    const infoEl = document.getElementById('info');
-    const stateEl = document.getElementById('state');
-    const logEl = document.getElementById('log');
+    const els = {
+        version: document.getElementById('version'),
+        info: document.getElementById('info'),
+        state: document.getElementById('state'),
+        log: document.getElementById('log'),
+    };
     try {
-        const version = await appBinding('GetVersion')();
-        const info = await appBinding('GetInfo')();
-        const state = await appBinding('GetUpdateState')();
-        versionEl.textContent = version;
-        infoEl.textContent = `OS: ${info.os} | Arch: ${info.arch}`;
-        stateEl.textContent = state;
-        logEl.textContent = `Updater log:\n[init] version=${version}, os=${info.os}, arch=${info.arch}, state=${state}`;
+        const [version, info] = await Promise.all([
+            appBinding('GetVersion')(),
+            appBinding('GetInfo')(),
+        ]);
+        els.version.textContent = version;
+        els.info.textContent = `OS: ${info.os} | Arch: ${info.arch} | Signing key: ${info.keyId}`;
+        await refresh(els);
+        setInterval(() => { refresh(els).catch((e) => console.error(e)); }, 1500);
     } catch (err) {
-        logEl.textContent = `Error: ${err}`;
+        els.log.textContent = `Error: ${err}`;
         console.error(err);
     }
 }

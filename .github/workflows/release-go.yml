@@ -2,14 +2,8 @@ name: Build and Release Go Demo
 
 on:
   push:
-    branches: [main]
+    branches: [main, "release/v*"]
     tags: ["v*"]
-  workflow_dispatch:
-    inputs:
-      version:
-        description: Version without v prefix
-        required: true
-        default: "1.0.0"
 
 permissions:
   contents: write
@@ -30,16 +24,51 @@ jobs:
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: |
-            go-demo/frontend/package-lock.json
-            rust-demo/package-lock.json
-      - name: Install tools
+          cache-dependency-path: go-demo/frontend/package-lock.json
+
+      - name: Resolve version and release mode
+        id: ver
         run: |
-          go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
-          Push-Location rust-demo; npm ci; Pop-Location
+          $ref = "${{ github.ref }}"
+          if ($ref -like "refs/tags/v*") { $v = $ref.Substring(11); $release = "true" }
+          elseif ($ref -like "refs/heads/release/v*") { $v = $ref.Substring(20); $release = "true" }
+          else { $v = "1.0.0"; $release = "false" }
+          Write-Host "version=$v release=$release"
+          "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "tag=v$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "release=$release" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Resolve signing key (secret -> fallback demo key trong repo)
+        env:
+          SECRET_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          SECRET_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          $keyPath = Join-Path $env:RUNNER_TEMP "signing.key"
+          if ([string]::IsNullOrWhiteSpace($env:SECRET_KEY)) {
+            Copy-Item keys/demo-signing.key $keyPath -Force
+            $password = (Get-Content keys/demo-signing.password -Raw).Trim()
+            Write-Host "Signing key: demo key trong repo (khong tim thay secret)"
+          } else {
+            $raw = $env:SECRET_KEY.Trim()
+            $decoded = $raw
+            try {
+              $maybe = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($raw))
+              if ($maybe -like "*untrusted comment*") { $decoded = $maybe }
+            } catch { }
+            Set-Content -Path $keyPath -Value $decoded -Encoding ascii
+            $password = $env:SECRET_PASSWORD
+            Write-Host "Signing key: GitHub Secrets"
+          }
+          "SIGNING_KEY_PATH=$keyPath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "SIGNING_KEY_PASSWORD=$password" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Install Wails
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
+
       - name: Build frontend
         working-directory: go-demo/frontend
         run: npm ci; npm run build
+
       - name: Test
         working-directory: go-demo
         run: |
@@ -47,14 +76,15 @@ jobs:
           go test ./... -race 2>&1 | Tee-Object -FilePath go-test.log
           $code = $LASTEXITCODE
           if ($code -ne 0) {
-            Get-Content go-test.log | Select-Object -Last 60 | ForEach-Object { Write-Host "::error::$_" }
+            Get-Content go-test.log | Select-Object -Last 80 | ForEach-Object { Write-Host "::error::$_" }
             throw "go test failed with exit code $code"
           }
+
       - name: Build Windows app
         working-directory: go-demo
         run: |
           $ErrorActionPreference = 'Continue'
-          $version = if ("${{ github.ref_type }}" -eq "tag") { "${{ github.ref_name }}".TrimStart('v') } else { "${{ inputs.version || '1.0.0' }}" }
+          $version = "${{ steps.ver.outputs.version }}"
           wails build -clean -ldflags "-X go-demo/internal/version.Version=$version" 2>&1 | Tee-Object -FilePath wails-build.log
           $code = $LASTEXITCODE
           if ($code -ne 0) {
@@ -67,6 +97,18 @@ jobs:
             throw 'wails build produced no exe in build/bin'
           }
           Copy-Item $exe.FullName "build/bin/go-demo-windows-x64.exe" -Force
+
+      - name: Sign artifact and generate manifest
+        working-directory: go-demo
+        run: |
+          $version = "${{ steps.ver.outputs.version }}"
+          go run ./cmd/sign-artifact -key "$env:SIGNING_KEY_PATH" -password "$env:SIGNING_KEY_PASSWORD" -in build/bin/go-demo-windows-x64.exe -out build/bin/go-demo-windows-x64.exe.sig
+          if ($LASTEXITCODE -ne 0) { throw 'sign-artifact failed' }
+          ./scripts/generate-manifest.ps1 -Version $version -Artifact build/bin/go-demo-windows-x64.exe -Signature build/bin/go-demo-windows-x64.exe.sig -Repository "${{ github.repository }}"
+          go run ./cmd/verify-artifact -manifest manifest-go.json -file build/bin/go-demo-windows-x64.exe
+          if ($LASTEXITCODE -ne 0) { throw 'verify-artifact failed' }
+          (Get-FileHash build/bin/go-demo-windows-x64.exe -Algorithm SHA256).Hash.ToLower() + ' go-demo-windows-x64.exe' | Set-Content build/bin/go-demo-windows-x64.exe.sha256
+
       - name: Upload build logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -77,35 +119,30 @@ jobs:
             go-demo/wails-build.log
           if-no-files-found: ignore
           retention-days: 7
+
       - uses: actions/upload-artifact@v4
         with:
           name: go-demo-windows-x64
-          path: go-demo/build/bin/go-demo-windows-x64.exe
+          path: |
+            go-demo/build/bin/go-demo-windows-x64.exe
+            go-demo/build/bin/go-demo-windows-x64.exe.sig
+            go-demo/build/bin/go-demo-windows-x64.exe.sha256
+            go-demo/manifest-go.json
           if-no-files-found: error
-      - name: Require signing key for release
-        if: github.ref_type == 'tag'
-        env:
-          SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-        run: if ([string]::IsNullOrWhiteSpace($env:SIGNING_KEY)) { throw 'Missing TAURI_SIGNING_PRIVATE_KEY secret' }
-      - name: Sign and generate manifest
-        if: github.ref_type == 'tag'
-        working-directory: go-demo
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: |
-          $version = "${{ github.ref_name }}".TrimStart('v')
-          Push-Location ../rust-demo
-          npx tauri signer sign ../go-demo/build/bin/go-demo-windows-x64.exe
-          if ($LASTEXITCODE -ne 0) { throw 'tauri signer sign failed' }
-          Pop-Location
-          if (!(Test-Path build/bin/go-demo-windows-x64.exe.sig)) { throw 'signature file was not generated' }
-          ./scripts/generate-manifest.ps1 -Version $version -Artifact build/bin/go-demo-windows-x64.exe -Signature build/bin/go-demo-windows-x64.exe.sig -Repository "${{ github.repository }}"
-          (Get-FileHash build/bin/go-demo-windows-x64.exe -Algorithm SHA256).Hash.ToLower() + ' go-demo-windows-x64.exe' | Set-Content build/bin/go-demo-windows-x64.exe.sha256
+
       - name: Publish Go release assets
-        if: github.ref_type == 'tag'
+        if: steps.ver.outputs.release == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release view "${{ github.ref_name }}" *> $null; if ($LASTEXITCODE -ne 0) { gh release create "${{ github.ref_name }}" --title "Release ${{ github.ref_name }}" --notes "Automated desktop update demo release." }
-          gh release upload "${{ github.ref_name }}" go-demo/build/bin/go-demo-windows-x64.exe go-demo/build/bin/go-demo-windows-x64.exe.sig go-demo/build/bin/go-demo-windows-x64.exe.sha256 go-demo/manifest-go.json --clobber
+          $tag = "${{ steps.ver.outputs.tag }}"
+          for ($i = 0; $i -lt 5; $i++) {
+            gh release view $tag *> $null
+            if ($LASTEXITCODE -eq 0) { break }
+            gh release create $tag --target "${{ github.sha }}" --title "Release $tag" --notes "Automated desktop update demo release ($tag)." *> $null
+            if ($LASTEXITCODE -eq 0) { break }
+            Start-Sleep -Seconds 5
+          }
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -ne 0) { throw "khong tao duoc release $tag" }
+          gh release upload $tag go-demo/build/bin/go-demo-windows-x64.exe go-demo/build/bin/go-demo-windows-x64.exe.sig go-demo/build/bin/go-demo-windows-x64.exe.sha256 go-demo/manifest-go.json --clobber

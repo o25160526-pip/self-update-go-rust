@@ -43,6 +43,11 @@ rust-demo/src-tauri/icons/icon.ico
 .env.*
 !.env.example
 
+# Ngoai le: key DEMO dung cho repo public nay (khong dung cho production).
+# Xem keys/README.md - production thi dat key that vao GitHub Secrets.
+!keys/demo-signing.key
+!keys/demo-signing.key.b64
+
 # === IDE / OS ===
 .vscode/
 .idea/
