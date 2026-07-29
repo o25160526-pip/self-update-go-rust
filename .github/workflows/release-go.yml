@@ -1,0 +1,53 @@
+name: Build Go Demo
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version (e.g. 1.0.0)"
+        required: true
+        default: "1.0.0"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
+
+      - name: Download dependencies
+        working-directory: go-demo
+        run: go mod download
+
+      - name: Run unit tests
+        working-directory: go-demo
+        run: go test ./internal/... ./updater/... -v
+
+      - name: Build (release)
+        working-directory: go-demo
+        shell: pwsh
+        run: |
+          $version = "${{ github.event.inputs.version || '1.0.0' }}"
+          wails build -clean -ldflags "-X go-demo/internal/version.Version=$version"
+        env:
+          # Prevent Wails from requiring interactive prompts
+          CGO_ENABLED: 1
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-demo-windows-x64
+          path: go-demo/build/bin/
+          if-no-files-found: error
