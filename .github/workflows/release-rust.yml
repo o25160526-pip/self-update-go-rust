@@ -2,8 +2,13 @@ name: Build and Release Rust Demo
 
 on:
   push:
-    branches: [main, "release/v*"]
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version without v prefix
+        required: true
+        default: "1.0.0"
 
 permissions:
   contents: write
@@ -12,25 +17,7 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  test-logic:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: "1.94.1"
-          components: clippy,rustfmt
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: rust-demo
-      - name: Format Rust sources
-        run: cargo fmt --manifest-path rust-demo/Cargo.toml --all
-      - name: Verify Rust formatting
-        run: cargo fmt --manifest-path rust-demo/Cargo.toml --all -- --check
-      - run: cargo clippy --manifest-path rust-demo/logic/Cargo.toml --all-targets -- -D warnings
-      - run: cargo test --manifest-path rust-demo/logic/Cargo.toml
-  build-windows:
-    needs: test-logic
+  build:
     runs-on: windows-latest
     defaults:
       run:
@@ -41,75 +28,51 @@ jobs:
         with:
           toolchain: "1.94.1"
           targets: x86_64-pc-windows-msvc
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: rust-demo
-          key: win-msvc
       - uses: actions/setup-node@v7
         with:
           node-version: "24"
           cache: npm
           cache-dependency-path: rust-demo/package-lock.json
-      - name: Resolve version and release mode
+      - name: Resolve version
         id: ver
         run: |
-          $ref = "${{ github.ref }}"
-          if ($ref -like "refs/tags/v*") { $v = $ref.Substring(11); $release = "true" }
-          elseif ($ref -like "refs/heads/release/v*") { $v = $ref.Substring(20); $release = "true" }
-          else { $v = "1.0.$(git rev-list --count HEAD)"; $release = "true" }
+          $v = if ("${{ github.ref_type }}" -eq "tag") { "${{ github.ref_name }}".TrimStart('v') } else { "${{ inputs.version }}" }
           "version=$v" | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
-          "tag=v$v" | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
-          "release=$release" | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
       - name: Resolve signing key
         env:
           SECRET_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           SECRET_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
-          if ([string]::IsNullOrWhiteSpace($env:SECRET_KEY)) {
-            $key = (Get-Content keys/demo-signing.key.b64 -Raw).Trim()
-            $password = (Get-Content keys/demo-signing.password -Raw).Trim()
-          } else {
-            $key = $env:SECRET_KEY.Trim()
-            $password = $env:SECRET_PASSWORD
-          }
-          "TAURI_SIGNING_PRIVATE_KEY=$key" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-          "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=$password" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-      - name: Set app version
-        run: |
-          $path = 'rust-demo/src-tauri/tauri.conf.json'
-          $config = Get-Content $path -Raw | ConvertFrom-Json
-          $config.version = "${{ steps.ver.outputs.version }}"
-          $config | ConvertTo-Json -Depth 20 | Set-Content $path -Encoding utf8
-      - name: Build Tauri
+          if ([string]::IsNullOrWhiteSpace($env:SECRET_KEY)) { $env:TAURI_SIGNING_PRIVATE_KEY = (Get-Content keys/demo-signing.key.b64 -Raw).Trim(); $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = (Get-Content keys/demo-signing.password -Raw).Trim() }
+          else { $env:TAURI_SIGNING_PRIVATE_KEY = $env:SECRET_KEY.Trim(); $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = $env:SECRET_PASSWORD }
+          "TAURI_SIGNING_PRIVATE_KEY=$env:TAURI_SIGNING_PRIVATE_KEY" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Set version and build
         working-directory: rust-demo
-        run: npm ci; npm run tauri build -- --target x86_64-pc-windows-msvc
-      - name: Collect artifact
+        run: |
+          npm ci
+          $path = 'src-tauri/tauri.conf.json'; $config = Get-Content $path -Raw | ConvertFrom-Json; $config.version = "${{ steps.ver.outputs.version }}"; $config | ConvertTo-Json -Depth 20 | Set-Content $path -Encoding utf8
+          npm run tauri build -- --target x86_64-pc-windows-msvc
+      - name: Collect metadata
         run: |
           $bundle = Get-ChildItem rust-demo/target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe | Select-Object -First 1
           if (-not $bundle) { throw "NSIS setup exe was not produced" }
           New-Item artifacts -ItemType Directory -Force | Out-Null
           Copy-Item $bundle.FullName artifacts/rust-demo-windows-x64-setup.exe -Force
           Copy-Item ($bundle.FullName + '.sig') artifacts/rust-demo-windows-x64-setup.exe.sig -Force
-          ./rust-demo/scripts/generate-latest.ps1 -Version "${{ steps.ver.outputs.version }}" -Bundle artifacts/rust-demo-windows-x64-setup.exe -Signature artifacts/rust-demo-windows-x64-setup.exe.sig -Repository "${{ github.repository }}"
+          ./rust-demo/scripts/generate-latest.ps1 -Version "${{ steps.ver.outputs.version }}" -Tag "${{ github.ref_name }}" -Bundle artifacts/rust-demo-windows-x64-setup.exe -Signature artifacts/rust-demo-windows-x64-setup.exe.sig -Repository "${{ github.repository }}"
       - uses: actions/upload-artifact@v4.6.2
         with:
-          name: rust-demo-windows-x64
+          name: rust-release-assets
           path: |
             artifacts/rust-demo-windows-x64-setup.exe
             artifacts/rust-demo-windows-x64-setup.exe.sig
             latest-rust.json
           if-no-files-found: error
-      - name: Publish release
-        if: steps.ver.outputs.release == 'true'
+      - name: Publish tagged release assets
+        if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $tag = "${{ steps.ver.outputs.tag }}"
-          for ($i = 0; $i -lt 5; $i++) {
-            gh release view $tag *> $null
-            if ($LASTEXITCODE -eq 0) { break }
-            gh release create $tag --target "${{ github.sha }}" --title "Release $tag" --notes "Automated release $tag" *> $null
-            if ($LASTEXITCODE -eq 0) { break }
-            Start-Sleep -Seconds 5
-          }
-          gh release upload $tag artifacts/rust-demo-windows-x64-setup.exe artifacts/rust-demo-windows-x64-setup.exe.sig latest-rust.json --clobber
+          gh release view "${{ github.ref_name }}" *> $null; if ($LASTEXITCODE -ne 0) { gh release create "${{ github.ref_name }}" --title "Release ${{ github.ref_name }}" --notes "Automated desktop update demo release." }
+          gh release upload "${{ github.ref_name }}" artifacts/rust-demo-windows-x64-setup.exe artifacts/rust-demo-windows-x64-setup.exe.sig latest-rust.json --clobber

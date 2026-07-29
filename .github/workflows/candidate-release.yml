@@ -1,0 +1,148 @@
+name: Candidate Release and Silent Validation
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  REPO: ${{ github.repository }}
+
+concurrency:
+  group: candidate-release
+  cancel-in-progress: true
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      tag: ${{ steps.meta.outputs.tag }}
+      stable_tag: ${{ steps.meta.outputs.stable_tag }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: meta
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="1.0.${GITHUB_RUN_NUMBER}"
+          stable_tag=$(gh release list --repo "$REPO" --exclude-drafts --exclude-pre-releases --limit 1 --json tagName --jq '.[0].tagName')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v${version}-candidate" >> "$GITHUB_OUTPUT"
+          echo "stable_tag=$stable_tag" >> "$GITHUB_OUTPUT"
+
+  go-candidate:
+    needs: prepare
+    runs-on: windows-latest
+    defaults:
+      run: { shell: pwsh }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with: { go-version: "1.25.12", cache-dependency-path: go-demo/go.sum }
+      - uses: actions/setup-node@v7
+        with: { node-version: "24", cache: npm, cache-dependency-path: go-demo/frontend/package-lock.json }
+      - name: Resolve signing key
+        env: { SECRET_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}, SECRET_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }} }
+        run: |
+          $keyPath = Join-Path $env:RUNNER_TEMP signing.key
+          if ([string]::IsNullOrWhiteSpace($env:SECRET_KEY)) { Copy-Item keys/demo-signing.key $keyPath; $password = (Get-Content keys/demo-signing.password -Raw).Trim() } else { Set-Content $keyPath ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:SECRET_KEY))); $password = $env:SECRET_PASSWORD }
+          "SIGNING_KEY_PATH=$keyPath" | Out-File $env:GITHUB_ENV -Append; "SIGNING_KEY_PASSWORD=$password" | Out-File $env:GITHUB_ENV -Append
+      - working-directory: go-demo/frontend
+        run: npm ci; npm run build
+      - run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
+      - working-directory: go-demo
+        run: |
+          go test ./... -race -timeout 300s
+          wails build -clean -ldflags "-X go-demo/internal/version.Version=${{ needs.prepare.outputs.version }}"
+          $exe = Get-ChildItem build/bin/*.exe | Select-Object -First 1; Copy-Item $exe.FullName build/bin/go-demo-windows-x64.exe -Force
+          go run ./cmd/sign-artifact -key "$env:SIGNING_KEY_PATH" -password "$env:SIGNING_KEY_PASSWORD" -in build/bin/go-demo-windows-x64.exe -out build/bin/go-demo-windows-x64.exe.sig
+          ./scripts/generate-manifest.ps1 -Version "${{ needs.prepare.outputs.version }}" -Tag "${{ needs.prepare.outputs.tag }}" -Artifact build/bin/go-demo-windows-x64.exe -Signature build/bin/go-demo-windows-x64.exe.sig -Repository "${{ github.repository }}"
+      - uses: actions/upload-artifact@v4
+        with: { name: go-candidate, path: "go-demo/build/bin/*;go-demo/manifest-go.json", if-no-files-found: error }
+
+  rust-candidate:
+    needs: prepare
+    runs-on: windows-latest
+    defaults:
+      run: { shell: pwsh }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with: { toolchain: "1.94.1", targets: x86_64-pc-windows-msvc }
+      - uses: actions/setup-node@v7
+        with: { node-version: "24", cache: npm, cache-dependency-path: rust-demo/package-lock.json }
+      - name: Resolve signing key
+        env: { SECRET_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}, SECRET_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }} }
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:SECRET_KEY)) { $key=(Get-Content keys/demo-signing.key.b64 -Raw).Trim(); $password=(Get-Content keys/demo-signing.password -Raw).Trim() } else { $key=$env:SECRET_KEY.Trim(); $password=$env:SECRET_PASSWORD }
+          "TAURI_SIGNING_PRIVATE_KEY=$key" | Out-File $env:GITHUB_ENV -Append; "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=$password" | Out-File $env:GITHUB_ENV -Append
+      - working-directory: rust-demo
+        run: |
+          npm ci
+          $p='src-tauri/tauri.conf.json'; $c=Get-Content $p -Raw | ConvertFrom-Json; $c.version='${{ needs.prepare.outputs.version }}'; $c | ConvertTo-Json -Depth 20 | Set-Content $p
+          npm run tauri build -- --target x86_64-pc-windows-msvc
+      - run: |
+          $b=Get-ChildItem rust-demo/target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe | Select-Object -First 1; New-Item artifacts -ItemType Directory -Force | Out-Null
+          Copy-Item $b.FullName artifacts/rust-demo-windows-x64-setup.exe; Copy-Item ($b.FullName+'.sig') artifacts/rust-demo-windows-x64-setup.exe.sig
+          ./rust-demo/scripts/generate-latest.ps1 -Version '${{ needs.prepare.outputs.version }}' -Tag '${{ needs.prepare.outputs.tag }}' -Bundle artifacts/rust-demo-windows-x64-setup.exe -Signature artifacts/rust-demo-windows-x64-setup.exe.sig -Repository '${{ github.repository }}'
+      - uses: actions/upload-artifact@v4
+        with: { name: rust-candidate, path: "artifacts/*;latest-rust.json", if-no-files-found: error }
+
+  publish-candidate:
+    needs: [prepare, go-candidate, rust-candidate]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { pattern: "*-candidate", merge-multiple: true, path: assets }
+      - name: Publish prerelease candidate
+        env: { GH_TOKEN: ${{ github.token }} }
+        run: |
+          gh release create "${{ needs.prepare.outputs.tag }}" --repo "$env:REPO" --target "${{ github.sha }}" --title "Candidate ${{ needs.prepare.outputs.version }}" --notes "Automated candidate, not stable until silent validation passes." --prerelease
+          gh release upload "${{ needs.prepare.outputs.tag }}" --repo "$env:REPO" assets/* --clobber
+
+  silent-validation:
+    needs: [prepare, publish-candidate]
+    runs-on: windows-latest
+    steps:
+      - name: Download previous stable and candidate assets
+        env: { GH_TOKEN: ${{ github.token }}, STABLE: ${{ needs.prepare.outputs.stable_tag }}, CANDIDATE: ${{ needs.prepare.outputs.tag }} }
+        run: |
+          New-Item previous,candidate -ItemType Directory | Out-Null
+          gh release download $env:STABLE --repo $env:REPO --pattern 'go-demo-windows-x64.exe' --dir previous
+          gh release download $env:STABLE --repo $env:REPO --pattern 'rust-demo-windows-x64-setup.exe' --dir previous
+          gh release download $env:CANDIDATE --repo $env:REPO --pattern 'manifest-go.json' --dir candidate
+          gh release download $env:CANDIDATE --repo $env:REPO --pattern 'latest-rust.json' --dir candidate
+          gh release download $env:CANDIDATE --repo $env:REPO --pattern 'go-demo-windows-x64.exe' --dir candidate
+          gh release download $env:CANDIDATE --repo $env:REPO --pattern 'rust-demo-windows-x64-setup.exe' --dir candidate
+      - name: Silent Go self-update
+        env: { CANDIDATE_MANIFEST: https://github.com/${{ github.repository }}/releases/download/${{ needs.prepare.outputs.tag }}/manifest-go.json, EXPECTED: ${{ needs.prepare.outputs.version }} }
+        run: |
+          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP go-appdata; New-Item $env:LOCALAPPDATA -ItemType Directory -Force | Out-Null
+          $p = Start-Process .\previous\go-demo-windows-x64.exe -ArgumentList '--silent-update' -Environment @{ SELF_UPDATE_MANIFEST_URL=$env:CANDIDATE_MANIFEST } -PassThru
+          if (-not $p.WaitForExit(300000)) { Stop-Process $p.Id -Force; throw 'Go silent update timed out' }
+          if ($p.ExitCode -ne 0) { throw "Go silent update failed: $($p.ExitCode)" }
+          if ((.\previous\go-demo-windows-x64.exe --version).Trim() -ne $env:EXPECTED) { throw 'Go did not reach candidate version' }
+      - name: Silent Rust self-update
+        env: { CANDIDATE_ENDPOINT: https://github.com/${{ github.repository }}/releases/download/${{ needs.prepare.outputs.tag }}/latest-rust.json, EXPECTED: ${{ needs.prepare.outputs.version }} }
+        run: |
+          Start-Process .\previous\rust-demo-windows-x64-setup.exe -ArgumentList '/S' -Wait
+          $exe = Get-ChildItem "$env:LOCALAPPDATA" -Filter 'rust-demo.exe' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $exe) { throw 'Rust previous app was not installed' }
+          $p = Start-Process $exe.FullName -ArgumentList '--silent-update' -Environment @{ SELF_UPDATE_MANIFEST_URL=$env:CANDIDATE_ENDPOINT } -PassThru
+          if (-not $p.WaitForExit(300000)) { Stop-Process $p.Id -Force; throw 'Rust silent update timed out' }
+          if ($p.ExitCode -ne 0) { throw "Rust silent update failed: $($p.ExitCode)" }
+          $new = Get-ChildItem "$env:LOCALAPPDATA" -Filter 'rust-demo.exe' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ((& $new.FullName --version).Trim() -ne $env:EXPECTED) { throw 'Rust did not reach candidate version' }
+
+  promote:
+    needs: [prepare, silent-validation]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Promote validated candidate
+        env: { GH_TOKEN: ${{ github.token }} }
+        run: gh release edit "${{ needs.prepare.outputs.tag }}" --repo "$REPO" --title "Release ${{ needs.prepare.outputs.version }}" --prerelease=false
