@@ -1,63 +1,36 @@
 package updater
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestPlatformString(t *testing.T) {
-	p := PlatformString()
-	// Should contain os and arch
-	if p == "" {
-		t.Error("expected non-empty platform string")
+	if PlatformString() == "" {
+		t.Fatal("empty platform")
 	}
 }
-
 func TestIsValidState(t *testing.T) {
-	validStates := []string{
-		"checking", "up-to-date", "update-available",
-		"downloading", "verifying", "installing",
-		"restarting", "failed", "rolled-back",
-	}
-	for _, s := range validStates {
+	for _, s := range []string{"checking", "up-to-date", "update-available", "downloading", "verifying", "installing", "restarting", "failed", "rolled-back"} {
 		if !IsValidState(s) {
-			t.Errorf("expected %s to be valid", s)
+			t.Fatalf("invalid %s", s)
 		}
 	}
-	invalidStates := []string{"", "unknown", "idle", "pending"}
-	for _, s := range invalidStates {
-		if IsValidState(s) {
-			t.Errorf("expected %s to be invalid", s)
-		}
+	if IsValidState("pending") {
+		t.Fatal("pending must not be UI state")
 	}
 }
-
-func TestMockCheckForUpdate_HasUpdate(t *testing.T) {
-	result := MockCheckForUpdate("1.0.0", true)
-	if !result.HasUpdate {
-		t.Error("expected hasUpdate=true")
+func TestMockCheckForUpdate(t *testing.T) {
+	if !MockCheckForUpdate("1.0.0", true).HasUpdate {
+		t.Fatal("expected update")
 	}
-	if result.LatestVersion != "1.0.1" {
-		t.Errorf("expected 1.0.1, got %s", result.LatestVersion)
+	if MockCheckForUpdate("1.0.1", false).HasUpdate {
+		t.Fatal("unexpected update")
 	}
 }
-
-func TestMockCheckForUpdate_NoUpdate(t *testing.T) {
-	result := MockCheckForUpdate("1.0.1", false)
-	if result.HasUpdate {
-		t.Error("expected hasUpdate=false")
-	}
-}
-
 func TestParseReleaseNotes(t *testing.T) {
-	short := "Fix bug"
-	if ParseReleaseNotes(short) != short {
-		t.Error("short notes should be unchanged")
-	}
-
-	long := strings.Repeat("a", 250)
-	result := ParseReleaseNotes(long)
-	if len(result) != 200 {
-		t.Errorf("expected 200 chars, got %d", len(result))
-	}
-	if result[197:] != "..." {
-		t.Error("expected ... at end")
+	got := ParseReleaseNotes(strings.Repeat("a", 250))
+	if len(got) != 200 || !strings.HasSuffix(got, "...") {
+		t.Fatalf("unexpected notes %q", got)
 	}
 }

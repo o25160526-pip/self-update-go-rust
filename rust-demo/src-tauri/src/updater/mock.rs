@@ -1,1 +1,6 @@
-// mock.rs — sẽ implement ở Phase tương ứng
+pub struct MockResult {
+    pub has_update: bool,
+}
+pub fn check() -> MockResult {
+    MockResult { has_update: true }
+}

@@ -1,1 +1,3 @@
-// restart.rs — sẽ implement ở Phase tương ứng
+pub fn restart(app: &tauri::AppHandle) -> ! {
+    app.restart()
+}

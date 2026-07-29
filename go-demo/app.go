@@ -3,8 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
-	"runtime"
 	"go-demo/internal/version"
+	"runtime"
 )
 
 // App struct

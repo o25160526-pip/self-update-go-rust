@@ -1,123 +1,89 @@
 package updater
 
 import (
+	"context"
 	"fmt"
+	"net/http"
 	"runtime"
 	"strings"
-
-	"github.com/creativeprojects/go-selfupdate"
+	"time"
 )
 
-// UpdateResult chứa kết quả kiểm tra update.
 type UpdateResult struct {
-	HasUpdate    bool
-	LatestVersion string
-	ReleaseNotes string
-	URL          string
+	HasUpdate     bool      `json:"hasUpdate"`
+	LatestVersion string    `json:"latestVersion,omitempty"`
+	ReleaseNotes  string    `json:"releaseNotes,omitempty"`
+	URL           string    `json:"url,omitempty"`
+	Manifest      *Manifest `json:"manifest,omitempty"`
 }
 
-// CheckForUpdate kiểm tra GitHub Releases xem có bản mới không.
-// repoURL dạng "owner/repo", ví dụ "o25160526-pip/self-update-go-rust".
-func CheckForUpdate(currentVersion, repoURL string) (*UpdateResult, error) {
-	source, err := selfupdate.NewGitHubSource(nil)
+type Checker struct {
+	Client *http.Client
+}
+
+func NewChecker() *Checker {
+	return &Checker{Client: &http.Client{Timeout: 20 * time.Second}}
+}
+
+func (c *Checker) Check(ctx context.Context, manifestURL, currentVersion string, policy UpdatePolicy) (*UpdateResult, error) {
+	m, err := FetchManifest(ctx, c.Client, manifestURL)
 	if err != nil {
-		return nil, fmt.Errorf("create github source: %w", err)
+		return nil, err
 	}
-
-	updater, err := selfupdate.NewUpdater(
-		selfupdate.WithSource(source),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("create updater: %w", err)
+	if err := m.Validate(); err != nil {
+		return nil, err
 	}
-
-	// Detect platform
-	asset := detectAsset(repoURL)
-
-	latest, found, err := updater.DetectVersion(asset, currentVersion)
-	if err != nil {
-		return nil, fmt.Errorf("detect version: %w", err)
+	if m.Channel != policy.Channel {
+		return &UpdateResult{}, nil
 	}
-	if !found {
-		return &UpdateResult{HasUpdate: false}, nil
+	if m.Platform != PlatformString() {
+		return &UpdateResult{}, nil
 	}
-
-	// Compare semver
-	isNewer, err := IsNewer(currentVersion, latest.ReleaseVersion)
+	newer, err := IsNewer(currentVersion, m.Version)
 	if err != nil {
 		return nil, fmt.Errorf("compare version: %w", err)
 	}
-
-	return &UpdateResult{
-		HasUpdate:     isNewer,
-		LatestVersion: latest.ReleaseVersion,
-		ReleaseNotes:  latest.ReleaseNotes,
-		URL:           latest.URL,
-	}, nil
-}
-
-// detectAsset trả về asset name pattern cho platform hiện tại.
-// Go demo dùng suffix "-go" để không ghi đè với Rust.
-func detectAsset(repoURL string) string {
-	// Format: go-demo-windows-{arch}
-	arch := runtime.GOARCH
-	if arch == "amd64" {
-		arch = "x64"
+	if !newer && !policy.AllowDowngrade {
+		return &UpdateResult{}, nil
 	}
-	return fmt.Sprintf("go-demo-windows-%s", arch)
+	return &UpdateResult{HasUpdate: true, LatestVersion: m.Version, ReleaseNotes: ParseReleaseNotes(m.ReleaseNotes), URL: m.URL, Manifest: m}, nil
 }
 
-// PlatformString trả về platform identifier chuẩn.
-// Ví dụ: "windows-x86_64"
 func PlatformString() string {
-	os := runtime.GOOS
 	arch := runtime.GOARCH
 	if arch == "amd64" {
 		arch = "x86_64"
 	}
-	return fmt.Sprintf("%s-%s", os, arch)
+	return fmt.Sprintf("%s-%s", runtime.GOOS, arch)
 }
 
-// StateString trả về state name cho UI.
 type UpdateState string
 
 const (
-	StateChecking       UpdateState = "checking"
-	StateUpToDate       UpdateState = "up-to-date"
+	StateChecking        UpdateState = "checking"
+	StateUpToDate        UpdateState = "up-to-date"
 	StateUpdateAvailable UpdateState = "update-available"
-	StateDownloading    UpdateState = "downloading"
-	StateVerifying      UpdateState = "verifying"
-	StateInstalling     UpdateState = "installing"
-	StateRestarting     UpdateState = "restarting"
-	StateFailed         UpdateState = "failed"
-	StateRolledBack     UpdateState = "rolled-back"
+	StateDownloading     UpdateState = "downloading"
+	StateVerifying       UpdateState = "verifying"
+	StateInstalling      UpdateState = "installing"
+	StateRestarting      UpdateState = "restarting"
+	StateFailed          UpdateState = "failed"
+	StateRolledBack      UpdateState = "rolled-back"
 )
 
-// IsValidState kiểm tra state string có hợp lệ không.
 func IsValidState(s string) bool {
 	switch UpdateState(s) {
-	case StateChecking, StateUpToDate, StateUpdateAvailable,
-		StateDownloading, StateVerifying, StateInstalling,
-		StateRestarting, StateFailed, StateRolledBack:
+	case StateChecking, StateUpToDate, StateUpdateAvailable, StateDownloading, StateVerifying, StateInstalling, StateRestarting, StateFailed, StateRolledBack:
 		return true
 	}
 	return false
 }
-
-// MockCheckForUpdate mô phỏng kiểm tra update cho --offline-test mode.
-func MockCheckForUpdate(currentVersion string, mockHasUpdate bool) *UpdateResult {
-	if mockHasUpdate {
-		return &UpdateResult{
-			HasUpdate:     true,
-			LatestVersion: "1.0.1",
-			ReleaseNotes: "Mock: Fix update flow and restart",
-			URL:          "mock://artifact-url",
-		}
+func MockCheckForUpdate(currentVersion string, hasUpdate bool) *UpdateResult {
+	if !hasUpdate {
+		return &UpdateResult{}
 	}
-	return &UpdateResult{HasUpdate: false}
+	return &UpdateResult{HasUpdate: true, LatestVersion: "1.0.1", ReleaseNotes: "Mock: Fix update flow and restart", URL: "mock://artifact-url"}
 }
-
-// ParseReleaseNotes trả về release notes ngắn (giới hạn 200 chars).
 func ParseReleaseNotes(notes string) string {
 	notes = strings.TrimSpace(notes)
 	if len(notes) > 200 {

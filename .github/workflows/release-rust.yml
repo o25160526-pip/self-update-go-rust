@@ -1,14 +1,18 @@
-name: Build Rust Demo
+name: Build and Release Rust Demo
 
 on:
   push:
+    branches: [main]
     tags: ["v*"]
   workflow_dispatch:
     inputs:
       version:
-        description: "Version (e.g. 1.0.0)"
+        description: Version without v prefix
         required: true
         default: "1.0.0"
+
+permissions:
+  contents: write
 
 jobs:
   test-logic:
@@ -16,49 +20,71 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: "1.94.1"
-      - name: Run logic unit tests
-        working-directory: rust-demo/logic
-        run: cargo test --verbose
+        with: { toolchain: "1.94.1", components: "clippy,rustfmt" }
+      - run: cargo fmt --manifest-path rust-demo/Cargo.toml --all -- --check
+      - run: cargo clippy --manifest-path rust-demo/logic/Cargo.toml --all-targets -- -D warnings
+      - run: cargo test --manifest-path rust-demo/logic/Cargo.toml
 
   build-windows:
     needs: test-logic
     runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
     steps:
       - uses: actions/checkout@v4
-
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: "1.94.1"
-
+          targets: x86_64-pc-windows-msvc
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-
-      - name: Install frontend deps
+          cache: npm
+          cache-dependency-path: rust-demo/package-lock.json
+      - name: Install dependencies
         working-directory: rust-demo
-        run: npm install
-
-      - name: Build Tauri app
-        uses: tauri-apps/tauri-action@v0
+        run: npm ci
+      - name: Require signing key for release
+        if: github.ref_type == 'tag'
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Signing keys will be added in P2-T1
-          # TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          # TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        with:
-          projectPath: rust-demo
-          tagName: ${{ github.event.inputs.version || '1.0.0' }}
-          releaseName: "Rust Demo v__VERSION__"
-          releaseBody: "Auto-update demo - Rust version. See assets to download."
-          releaseDraft: true
-          prerelease: false
-          args: --target x86_64-pc-windows-msvc
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+          SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: if ([string]::IsNullOrWhiteSpace($env:SIGNING_KEY)) { throw 'Missing TAURI_SIGNING_PRIVATE_KEY secret' }
+      - name: Configure unsigned CI build
+        if: github.ref_type != 'tag'
+        run: |
+          $path = 'rust-demo/src-tauri/tauri.conf.json'
+          $config = Get-Content $path -Raw | ConvertFrom-Json
+          $config.bundle.createUpdaterArtifacts = $false
+          $config | ConvertTo-Json -Depth 20 | Set-Content $path -Encoding utf8
+      - name: Build Tauri
+        working-directory: rust-demo
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ github.ref_type == 'tag' && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npm run tauri build -- --target x86_64-pc-windows-msvc
+      - name: Collect artifact
+        run: |
+          $bundle = Get-ChildItem rust-demo/target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe | Select-Object -First 1
+          New-Item artifacts -ItemType Directory -Force | Out-Null
+          Copy-Item $bundle.FullName artifacts/rust-demo-windows-x64-setup.exe
+          if (Test-Path ($bundle.FullName + '.sig')) { Copy-Item ($bundle.FullName + '.sig') artifacts/rust-demo-windows-x64-setup.exe.sig }
+      - uses: actions/upload-artifact@v4
         with:
           name: rust-demo-windows-x64
-          path: rust-demo/src-tauri/target/release/bundle/
+          path: artifacts/rust-demo-windows-x64-setup.exe
           if-no-files-found: error
+      - name: Generate release metadata
+        if: github.ref_type == 'tag'
+        run: |
+          if (!(Test-Path artifacts/rust-demo-windows-x64-setup.exe.sig)) { throw 'Signed updater artifact was not generated' }
+          $version = "${{ github.ref_name }}".TrimStart('v')
+          ./rust-demo/scripts/generate-latest.ps1 -Version $version -Bundle artifacts/rust-demo-windows-x64-setup.exe -Signature artifacts/rust-demo-windows-x64-setup.exe.sig -Repository "${{ github.repository }}"
+          (Get-FileHash artifacts/rust-demo-windows-x64-setup.exe -Algorithm SHA256).Hash.ToLower() + '  rust-demo-windows-x64-setup.exe' | Set-Content artifacts/rust-demo-windows-x64-setup.exe.sha256
+      - name: Publish Rust release assets
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "${{ github.ref_name }}" *> $null; if ($LASTEXITCODE -ne 0) { gh release create "${{ github.ref_name }}" --title "Release ${{ github.ref_name }}" --notes "Automated desktop update demo release." }
+          gh release upload "${{ github.ref_name }}" artifacts/rust-demo-windows-x64-setup.exe artifacts/rust-demo-windows-x64-setup.exe.sig artifacts/rust-demo-windows-x64-setup.exe.sha256 rust-demo/latest-rust.json --clobber

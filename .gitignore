@@ -9,7 +9,12 @@
 
 # === Go ===
 go-demo/build/bin/
+go-demo/go-demo
 go-demo/vendor/
+
+# === Agent-local tool cache ===
+.tools/
+tmp/
 
 # === Rust / Cargo ===
 rust-demo/target/

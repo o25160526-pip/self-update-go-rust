@@ -1,53 +1,82 @@
-name: Build Go Demo
+name: Build and Release Go Demo
 
 on:
   push:
+    branches: [main]
     tags: ["v*"]
   workflow_dispatch:
     inputs:
       version:
-        description: "Version (e.g. 1.0.0)"
+        description: Version without v prefix
         required: true
         default: "1.0.0"
+
+permissions:
+  contents: write
 
 jobs:
   build:
     runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-go@v5
         with:
           go-version: "1.25.12"
-
+          cache-dependency-path: go-demo/go.sum
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-
-      - name: Install Wails CLI
-        run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
-
-      - name: Download dependencies
-        working-directory: go-demo
-        run: go mod download
-
-      - name: Run unit tests
-        working-directory: go-demo
-        run: go test ./internal/... ./updater/... -v
-
-      - name: Build (release)
-        working-directory: go-demo
-        shell: pwsh
+          cache: npm
+          cache-dependency-path: |
+            go-demo/frontend/package-lock.json
+            rust-demo/package-lock.json
+      - name: Install tools
         run: |
-          $version = "${{ github.event.inputs.version || '1.0.0' }}"
+          go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
+          Push-Location rust-demo; npm ci; Pop-Location
+      - name: Test
+        working-directory: go-demo
+        run: go test ./... -race
+      - name: Build frontend
+        working-directory: go-demo/frontend
+        run: npm ci; npm run build
+      - name: Build Windows app
+        working-directory: go-demo
+        run: |
+          $version = if ("${{ github.ref_type }}" -eq "tag") { "${{ github.ref_name }}".TrimStart('v') } else { "${{ inputs.version || '1.0.0' }}" }
           wails build -clean -ldflags "-X go-demo/internal/version.Version=$version"
-        env:
-          # Prevent Wails from requiring interactive prompts
-          CGO_ENABLED: 1
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+          $exe = Get-ChildItem build/bin/*.exe | Select-Object -First 1
+          Copy-Item $exe.FullName "build/bin/go-demo-windows-x64.exe"
+      - uses: actions/upload-artifact@v4
         with:
           name: go-demo-windows-x64
-          path: go-demo/build/bin/
+          path: go-demo/build/bin/go-demo-windows-x64.exe
           if-no-files-found: error
+      - name: Require signing key for release
+        if: github.ref_type == 'tag'
+        env:
+          SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: if ([string]::IsNullOrWhiteSpace($env:SIGNING_KEY)) { throw 'Missing TAURI_SIGNING_PRIVATE_KEY secret' }
+      - name: Sign and generate manifest
+        if: github.ref_type == 'tag'
+        working-directory: go-demo
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          $version = "${{ github.ref_name }}".TrimStart('v')
+          Push-Location ../rust-demo
+          npx tauri signer sign ../go-demo/build/bin/go-demo-windows-x64.exe
+          Pop-Location
+          ./scripts/generate-manifest.ps1 -Version $version -Artifact build/bin/go-demo-windows-x64.exe -Signature build/bin/go-demo-windows-x64.exe.sig -Repository "${{ github.repository }}"
+          (Get-FileHash build/bin/go-demo-windows-x64.exe -Algorithm SHA256).Hash.ToLower() + '  go-demo-windows-x64.exe' | Set-Content build/bin/go-demo-windows-x64.exe.sha256
+      - name: Publish Go release assets
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "${{ github.ref_name }}" *> $null; if ($LASTEXITCODE -ne 0) { gh release create "${{ github.ref_name }}" --title "Release ${{ github.ref_name }}" --notes "Automated desktop update demo release." }
+          gh release upload "${{ github.ref_name }}" go-demo/build/bin/go-demo-windows-x64.exe go-demo/build/bin/go-demo-windows-x64.exe.sig go-demo/build/bin/go-demo-windows-x64.exe.sha256 go-demo/manifest-go.json --clobber

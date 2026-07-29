@@ -1,1 +1,2 @@
-// policy.rs — sẽ implement ở Phase tương ứng
+pub use rust_demo_logic::policy::UpdatePolicy;
+pub fn default_policy()->UpdatePolicy{UpdatePolicy::default()}

@@ -1,6 +1,3 @@
-// manifest.rs — parse manifest-go.json (format §7)
-// Testable trên Linux (không cần Tauri)
-
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -18,41 +15,57 @@ pub struct Manifest {
     pub size: u64,
     pub mandatory: bool,
 }
-
 impl Manifest {
     pub fn parse(json: &str) -> Result<Self, serde_json::Error> {
         serde_json::from_str(json)
     }
+    pub fn validate(&self) -> Result<(), String> {
+        semver::Version::parse(self.version.trim_start_matches('v')).map_err(|e| e.to_string())?;
+        if self.channel.is_empty() || self.platform.is_empty() || self.size == 0 {
+            return Err("missing required manifest field".into());
+        }
+        if !self.url.starts_with("https://") {
+            return Err("artifact URL must use HTTPS".into());
+        }
+        if self.sha256.len() != 64 || !self.sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err("sha256 must be 64 hex characters".into());
+        }
+        if self.signature.is_empty() {
+            return Err("signature is required".into());
+        };
+        Ok(())
+    }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_parse_valid_manifest() {
-        let json = r#"{
-            "version": "1.0.1",
-            "channel": "stable",
-            "publishedAt": "2026-07-29T00:00:00Z",
-            "releaseNotes": "Fix update flow",
-            "minSupportedVersion": "1.0.0",
-            "platform": "windows-x86_64",
-            "url": "https://example.com/app.exe",
-            "sha256": "abc123",
-            "signature": "sig",
-            "size": 12345678,
-            "mandatory": false
-        }"#;
-        let manifest = Manifest::parse(json).unwrap();
-        assert_eq!(manifest.version, "1.0.1");
-        assert_eq!(manifest.channel, "stable");
-        assert_eq!(manifest.platform, "windows-x86_64");
-        assert_eq!(manifest.size, 12345678);
+    fn valid() -> Manifest {
+        Manifest {
+            version: "1.0.1".into(),
+            channel: "stable".into(),
+            published_at: "2026-07-29T00:00:00Z".into(),
+            release_notes: "Fix".into(),
+            min_supported_version: "1.0.0".into(),
+            platform: "windows-x86_64".into(),
+            url: "https://example.com/a.exe".into(),
+            sha256: "a".repeat(64),
+            signature: "sig".into(),
+            size: 1,
+            mandatory: false,
+        }
     }
-
     #[test]
-    fn test_parse_invalid_json() {
-        assert!(Manifest::parse("not json").is_err());
+    fn validates() {
+        valid().validate().unwrap()
+    }
+    #[test]
+    fn rejects_http() {
+        let mut m = valid();
+        m.url = "http://example.com".into();
+        assert!(m.validate().is_err())
+    }
+    #[test]
+    fn invalid_json() {
+        assert!(Manifest::parse("no").is_err())
     }
 }

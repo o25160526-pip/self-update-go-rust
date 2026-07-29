@@ -1,25 +1,52 @@
-// check.rs — logic kiểm tra update (sẽ implement đầy đủ ở P2-T3)
-// P0: stub đơn giản để app compile được
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use tauri::AppHandle;
+use tauri_plugin_updater::UpdaterExt;
 
-static STATE: OnceLock<std::sync::Mutex<String>> = OnceLock::new();
-
-fn state_lock() -> &'static std::sync::Mutex<String> {
-    STATE.get_or_init(|| std::sync::Mutex::new("checking".to_string()))
+static STATE: OnceLock<Mutex<String>> = OnceLock::new();
+fn state_lock() -> &'static Mutex<String> {
+    STATE.get_or_init(|| Mutex::new("checking".into()))
 }
-
 pub fn get_state() -> String {
-    state_lock().lock().unwrap().clone()
+    state_lock()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+pub fn set_state(value: &str) {
+    *state_lock().lock().unwrap_or_else(|e| e.into_inner()) = value.into();
 }
 
-pub fn set_state(s: &str) {
-    *state_lock().lock().unwrap() = s.to_string();
-}
-
-/// Kiểm tra update khi app khởi động.
-/// P2-T3 sẽ implement đầy đủ: query endpoint, so sánh semver, etc.
-pub async fn check_on_startup(_app: AppHandle) {
-    // No endpoint configured yet → up-to-date
-    set_state("up-to-date");
+pub async fn check_on_startup(app: AppHandle, offline: bool) {
+    set_state("checking");
+    if offline {
+        let result = crate::updater::mock::check();
+        set_state(if result.has_update {
+            "update-available"
+        } else {
+            "up-to-date"
+        });
+        return;
+    }
+    let updater = match app.updater() {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("updater init failed: {e}");
+            set_state("failed");
+            return;
+        }
+    };
+    match updater.check().await {
+        Ok(Some(update)) => {
+            set_state("update-available");
+            if let Err(e) = crate::updater::install::download_install_restart(app, update).await {
+                eprintln!("update failed: {e}");
+                set_state("failed");
+            }
+        }
+        Ok(None) => set_state("up-to-date"),
+        Err(e) => {
+            eprintln!("update check failed: {e}");
+            set_state("failed");
+        }
+    }
 }

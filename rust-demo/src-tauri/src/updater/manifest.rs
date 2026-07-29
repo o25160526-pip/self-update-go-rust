@@ -1,1 +1,1 @@
-// manifest.rs — sẽ implement ở Phase tương ứng
+pub use rust_demo_logic::manifest::Manifest;
